@@ -1,0 +1,44 @@
+{
+  "targets": {
+    "main": {
+      "adapter": "\\\\?\\PCI#VEN_10DE&DEV_2702&SUBSYS_511A1462&REV_A1#4&1fc990d7&0&0019#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
+      "target_id": 37121,
+      "edid": "MSI3DD2",
+      "friendly": "MPG321UX OLED"
+    },
+    "sidemon": {
+      "adapter": "\\\\?\\PCI#VEN_10DE&DEV_2702&SUBSYS_511A1462&REV_A1#4&1fc990d7&0&0019#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
+      "target_id": 37124,
+      "edid": "GSM5BD3",
+      "friendly": "LG ULTRAGEAR"
+    },
+    "dell": {
+      "adapter": "\\\\?\\PCI#VEN_10DE&DEV_2702&SUBSYS_511A1462&REV_A1#4&1fc990d7&0&0019#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
+      "target_id": 37123,
+      "edid": "DELA0BC",
+      "friendly": "DELL U2415"
+    },
+    "tv": {
+      "adapter": "\\\\?\\PCI#VEN_10DE&DEV_2702&SUBSYS_511A1462&REV_A1#4&1fc990d7&0&0019#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
+      "target_id": 37120,
+      "edid": "PHL01EA",
+      "friendly": "Philips FTV"
+    }
+  },
+  "profiles": {
+    "3monitor": [
+      "main",
+      "sidemon",
+      "dell"
+    ],
+    "tv": [
+      "main",
+      "sidemon",
+      "tv"
+    ]
+  },
+  "switch": [
+    "3monitor",
+    "tv"
+  ]
+}
