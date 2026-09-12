@@ -3,11 +3,24 @@ name = "monitor-switcher"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Off by default on purpose. libCEC is GPL-2.0-or-later, so a build with this
+# feature produces a binary covered by the GPL, while the default build links
+# nothing but permissively licensed crates and needs no libCEC installed.
+default = []
+cec = ["dep:libcec"]
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+libcec = { version = "8.1.7", optional = true }
+
+[build-dependencies]
+# Used only to locate the MSVC tools that generate libCEC's import library,
+# and only when the `cec` feature is on.
+cc = "1"
 
 [dependencies.windows]
 version = "0.62"

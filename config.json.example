@@ -22,7 +22,13 @@
       "adapter": "\\\\?\\PCI#VEN_10DE&DEV_2702&SUBSYS_511A1462&REV_A1#4&1fc990d7&0&0019#{5b45201d-f2f2-4f3b-85bb-30ff1f953599}",
       "target_id": 37120,
       "edid": "PHL01EA",
-      "friendly": "Philips FTV"
+      "friendly": "Philips FTV",
+      "cec": {
+        "hdmi_port": 1,
+        "power_on": true,
+        "standby": true,
+        "activate_source": true
+      }
     }
   },
   "profiles": {

@@ -35,6 +35,39 @@ pub struct TargetEntry {
     /// Whatever the monitor called itself when captured. Comment, not key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub friendly: Option<String>,
+    /// HDMI-CEC power control for this display, if it has any. Absent means
+    /// the display is only ever switched at the GPU, never powered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cec: Option<CecConfig>,
+}
+
+/// Per-display CEC behaviour. Every action is opt-out, because a display with
+/// a `cec` block at all is one you want powered along with the topology.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CecConfig {
+    /// Which numbered HDMI input on the TV the adapter's signal arrives at.
+    /// Determines the physical address claimed, and so whether taking over the
+    /// input works.
+    #[serde(default = "default_hdmi_port")]
+    pub hdmi_port: u8,
+    /// Wake the display when a profile activates it.
+    #[serde(default = "yes")]
+    pub power_on: bool,
+    /// Put the display into standby when a profile deactivates it.
+    #[serde(default = "yes")]
+    pub standby: bool,
+    /// Take over the display's input after waking it, so it shows this PC
+    /// rather than whatever else is attached to it.
+    #[serde(default = "yes")]
+    pub activate_source: bool,
+}
+
+fn default_hdmi_port() -> u8 {
+    1
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Read and parse the config. `Ok(None)` means the file genuinely is not there.
@@ -76,9 +109,7 @@ fn missing_config_message(path: &Path) -> String {
                         format!("exists and contains: {}", names.join(", "))
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                    "does not exist".to_string()
-                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => "does not exist".to_string(),
                 Err(e) => format!("cannot be read: {e}"),
             };
             msg.push_str(&format!("\n  the directory {} {}", dir.display(), state));
@@ -103,7 +134,9 @@ impl Config {
     pub fn default_path() -> Result<PathBuf> {
         let base = std::env::var("LOCALAPPDATA")
             .context("LOCALAPPDATA is not set; pass --config with an explicit path")?;
-        Ok(PathBuf::from(base).join("monitor-switcher").join("config.json"))
+        Ok(PathBuf::from(base)
+            .join("monitor-switcher")
+            .join("config.json"))
     }
 
     /// Load the config, or an empty one if the file does not exist yet.
@@ -122,8 +155,7 @@ impl Config {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("creating {}", dir.display()))?;
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
         }
         let text = serde_json::to_string_pretty(self)?;
         std::fs::write(path, text + "\n")

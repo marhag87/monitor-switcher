@@ -45,6 +45,9 @@ pub fn run(
                         key: m.key.clone(),
                         edid: m.name.edid.clone(),
                         friendly: m.name.friendly.clone(),
+                        // Power control is opt-in: a newly discovered display
+                        // gets switched at the GPU only, until you say otherwise.
+                        cec: None,
                     },
                 );
                 newly_named.push(generated.clone());
@@ -64,7 +67,10 @@ pub fn run(
             newly_named.len(),
             newly_named.join(", ")
         );
-        println!("Rename them in {} if you'd like shorter names.", path.display());
+        println!(
+            "Rename them in {} if you'd like shorter names.",
+            path.display()
+        );
     }
     if config.switch.is_none() && config.profiles.len() >= 2 {
         let names: Vec<&str> = config.profiles.keys().map(|s| s.as_str()).collect();

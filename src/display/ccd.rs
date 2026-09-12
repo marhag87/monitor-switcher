@@ -70,7 +70,10 @@ pub fn query(flags: QUERY_DISPLAY_CONFIG_FLAGS) -> Result<Topology> {
         // SAFETY: both out-params are valid pointers to initialised locals.
         let rc = unsafe { GetDisplayConfigBufferSizes(flags, &mut n_paths, &mut n_modes) };
         if rc.0 != ERROR_SUCCESS {
-            bail!("GetDisplayConfigBufferSizes failed: {}", winerr::describe(rc.0));
+            bail!(
+                "GetDisplayConfigBufferSizes failed: {}",
+                winerr::describe(rc.0)
+            );
         }
 
         let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); n_paths as usize];

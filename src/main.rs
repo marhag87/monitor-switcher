@@ -4,6 +4,8 @@
 //! than the legacy GDI display API, because only CCD can see — and therefore
 //! re-enable — an output that is currently switched off.
 
+#[cfg(feature = "cec")]
+mod cec;
 mod cli;
 mod config;
 mod display;
@@ -58,6 +60,15 @@ enum Command {
         #[command(flatten)]
         dry: DryRun,
     },
+    /// Power a display on or off over HDMI-CEC, without changing topology
+    #[cfg(feature = "cec")]
+    Cec {
+        /// What to do
+        #[arg(value_enum)]
+        action: cli::cec::Action,
+        /// Which target, if more than one supports CEC
+        target: Option<String>,
+    },
     /// Alternate between two profiles
     Switch {
         /// The two profiles to alternate between (defaults to the config's pair)
@@ -110,9 +121,14 @@ fn run() -> Result<()> {
         }
         Command::ApplyProfile { name, dry } => {
             let config = Config::load(&config_path)?;
-            let outcome = display::apply::apply_profile(&config, &name, dry.dry_run)?;
-            report(&name, outcome);
+            let report_ = display::apply::apply_profile(&config, &name, dry.dry_run)?;
+            report(&name, report_);
             Ok(())
+        }
+        #[cfg(feature = "cec")]
+        Command::Cec { action, target } => {
+            let config = Config::load(&config_path)?;
+            cli::cec::run(&config, action, target.as_deref())
         }
         Command::Switch { profiles, dry } => {
             let config = Config::load(&config_path)?;
@@ -121,18 +137,21 @@ fn run() -> Result<()> {
                 [a, b] => (a.clone(), b.clone()),
                 _ => anyhow::bail!("switch takes either no profiles or exactly 2"),
             };
-            let (applied, outcome) = display::apply::switch(&config, &a, &b, dry.dry_run)?;
-            report(&applied, outcome);
+            let (applied, report_) = display::apply::switch(&config, &a, &b, dry.dry_run)?;
+            report(&applied, report_);
             Ok(())
         }
     }
 }
 
-fn report(profile: &str, outcome: display::apply::Outcome) {
+fn report(profile: &str, report: display::apply::Report) {
     use display::apply::Outcome;
-    match outcome {
+    match report.outcome {
         Outcome::AlreadyActive => println!("\"{profile}\" is already active"),
         Outcome::Validated => println!("\"{profile}\" validates; nothing was changed"),
         Outcome::Applied(tier) => println!("Applied \"{profile}\" — {}", tier.describe()),
+    }
+    for note in report.cec {
+        println!("  {note}");
     }
 }

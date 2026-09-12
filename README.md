@@ -24,8 +24,9 @@ switched off.
 
 > [!WARNING]
 > **AI-generated code.** This project was written largely by an AI assistant.
-> It reconfigures display topology through the Win32 CCD API, and it has been
-> verified on exactly one machine — a single RTX 4080 SUPER driving four
+> It reconfigures display topology through the Win32 CCD API and, with the
+> `cec` feature, powers a television on and off over the HDMI cable. It has
+> been verified on exactly one machine — a single RTX 4080 SUPER driving four
 > displays. Review it yourself before running it. It is provided "as is",
 > without warranty of any kind (see [LICENSE](LICENSE)); the author accepts no
 > responsibility or liability for any damage, data loss, or unexpected
@@ -66,6 +67,9 @@ via `rust-toolchain.toml`, so a machine defaulting to nightly still builds this
 with stable.
 
 No administrator rights are needed, for building or running.
+
+The default build has no dependency on libCEC and no TV power control; see
+[TV power over HDMI-CEC](#tv-power-over-hdmi-cec) to turn that on.
 
 ## Use
 
@@ -153,8 +157,69 @@ are usually nicer:
 A profile is just the set of outputs that should be on. Resolutions and
 positions are Windows' business, not this file's.
 
-`edid` and `friendly` are recorded for your benefit and for a possible future
-DDC/CI feature; neither is used to identify anything.
+`edid` and `friendly` are recorded for your benefit and for addressing monitors
+over DDC/CI; neither is used to identify anything for topology purposes.
+
+## TV power over HDMI-CEC
+
+Switching a GPU output on does not switch the *display* on. For a monitor you
+would do that over DDC/CI, but televisions generally don't implement it — the
+Philips set this was built for answers nothing over DDC, not power, not
+brightness, not even input select. Televisions do HDMI-CEC instead.
+
+CEC needs hardware, because GPUs don't carry it: a Pulse-Eight USB-CEC adapter,
+inline between the graphics card and the TV, with USB to the PC. With one
+fitted, `switch` can wake the TV and take over its input on the way in, and put
+it back to standby on the way out.
+
+It is off by default and opt-in at build time:
+
+```
+cargo build --release --features cec
+```
+
+That needs **libCEC x64** installed ([releases][libcec]; the installer defaults
+to the 32-bit build, which cannot link into a 64-bit binary). The Windows
+package ships `cec.dll` and headers but no import library, so `build.rs`
+generates one from the DLL's exports and copies the DLL next to the executable
+— nothing derived from libCEC is committed here, and it can't drift out of step
+with what's installed.
+
+Then give the display a `cec` block:
+
+```jsonc
+"tv": {
+  "adapter": "...", "target_id": 37120, "edid": "PHL01EA",
+  "cec": {
+    "hdmi_port": 1,          // which input on the TV the adapter feeds
+    "power_on": true,        // wake it when a profile activates it
+    "standby": true,         // sleep it when a profile deactivates it
+    "activate_source": true  // take over the input, so it shows this PC
+  }
+}
+```
+
+`hdmi_port` matters more than it looks: it sets the physical address claimed on
+the CEC bus, which is what makes taking over the input work. Get it wrong and
+power still works while `activate_source` may not.
+
+`monitor-switcher cec status|on|off` drives power directly without touching
+topology — the quickest way to tell whether the adapter is at fault when a
+`switch` doesn't do what you expected.
+
+Power control is always best-effort: if the adapter is missing or the TV
+ignores a command, `switch` says so and still changes the display topology. A
+missing adapter must never stop your monitors switching.
+
+> [!IMPORTANT]
+> **libCEC is GPL-2.0-or-later** (or commercial, from Pulse-Eight), so a binary
+> built with `--features cec` is a combined work and can only be distributed
+> under the GPL — as can `cec.dll` itself. This project's own source stays MIT,
+> and the default build links nothing but permissively licensed crates. If you
+> distribute binaries, ship default-feature ones and let people build the CEC
+> variant themselves.
+
+[libcec]: https://github.com/Pulse-Eight/libcec/releases/latest
 
 ## Bind it to a key
 
@@ -170,6 +235,12 @@ without that last part you get a console window flashing on every press.
   23.976 Hz in the wrong position. The fix is a one-off: activate that display,
   correct it in Settings, and the database is corrected for good. Note the
   failure mode — a *wrong layout restored*, never a failed switch.
+- **A TV will not wake while it is still going to sleep.** A CEC power-on sent
+  during the on-to-standby transition is silently dropped, so switching away and
+  straight back would otherwise leave the TV dark. The tool waits out the
+  transition (up to 12s) before asking, and then waits for the set to confirm it
+  is on (up to 15s) — which is why a switch *towards* the TV can take a couple of
+  seconds longer than one away from it.
 - **Off is not the same as unplugged.** A display in standby keeps its
   hot-plug-detect line asserted, so it stays enumerable and switchable; this was
   confirmed with the TV physically powered off. A display unplugged at the cable
@@ -189,10 +260,15 @@ without that last part you get a console window flashing on every press.
 
 ## Not in scope
 
-Input-source switching — which video input a monitor itself is displaying — is
-a different thing entirely, done over DDC/CI rather than by reconfiguring GPU
-outputs. [ControlMyMonitor][cmm] does it well. The module layout here leaves
-room for it, and monitor EDID ids are recorded with that in mind, but it isn't
-implemented.
+Input-source switching for *monitors* — telling a panel which of its own video
+inputs to display — is done over DDC/CI, a different protocol from both of the
+above. [ControlMyMonitor][cmm] does it well and is what drives it here. Monitor
+EDID ids are recorded in the config with a future implementation in mind, but
+it isn't written.
+
+Worth knowing which displays answer what, since it is not obvious: on this desk
+the LG monitor implements DDC/CI fully, including power (`VCP D6`), while the
+Philips TV implements none of it and only speaks CEC. Monitors do DDC/CI;
+televisions do CEC.
 
 [cmm]: https://www.nirsoft.net/utils/control_my_monitor.html

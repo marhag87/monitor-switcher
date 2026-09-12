@@ -20,6 +20,8 @@ use windows::Win32::Graphics::Gdi::{
 
 use super::ccd::{self, AdapterPaths};
 use super::identity::{self, TargetKey};
+#[cfg(feature = "cec")]
+use crate::cec::Cec;
 use crate::config::Config;
 use crate::winerr;
 
@@ -99,7 +101,16 @@ fn resolve(config: &Config, members: &[String]) -> Result<Vec<TargetKey>> {
         .collect()
 }
 
-pub fn apply_profile(config: &Config, profile: &str, dry_run: bool) -> Result<Outcome> {
+/// The result of applying a profile: what happened to the display topology,
+/// plus whatever CEC power control had to say about it.
+pub struct Report {
+    pub outcome: Outcome,
+    /// Human-readable notes from CEC actions, including failures. These never
+    /// abort an apply — the topology change is the part that must work.
+    pub cec: Vec<String>,
+}
+
+pub fn apply_profile(config: &Config, profile: &str, dry_run: bool) -> Result<Report> {
     let members = config.profiles.get(profile).ok_or_else(|| {
         let known: Vec<&str> = config.profiles.keys().map(|s| s.as_str()).collect();
         anyhow::anyhow!(
@@ -108,7 +119,86 @@ pub fn apply_profile(config: &Config, profile: &str, dry_run: bool) -> Result<Ou
         )
     })?;
     let desired = resolve(config, members)?;
-    apply_targets(&desired, dry_run)
+
+    let was_active = active_keys()?;
+    let outcome = apply_targets(&desired, dry_run)?;
+
+    let cec = if dry_run || matches!(outcome, Outcome::AlreadyActive) {
+        Vec::new()
+    } else {
+        run_cec(config, &desired, &was_active)
+    };
+
+    Ok(Report { outcome, cec })
+}
+
+/// Power displays on or off to match the topology we just applied.
+///
+/// Ordering is deliberate: this runs *after* the topology change, never before.
+/// If an apply fails we must not have already switched someone's TV off for a
+/// change that never happened.
+#[cfg(feature = "cec")]
+fn run_cec(config: &Config, desired: &[TargetKey], was_active: &[TargetKey]) -> Vec<String> {
+    let mut notes = Vec::new();
+
+    // Only displays whose active state actually changed need anything done.
+    let waking: Vec<(&String, &crate::config::CecConfig)> = config
+        .targets
+        .iter()
+        .filter_map(|(name, entry)| entry.cec.as_ref().map(|c| (name, c)))
+        .filter(|(_, c)| c.power_on)
+        .filter(|(name, _)| {
+            let key = &config.targets[*name].key;
+            desired.contains(key) && !was_active.contains(key)
+        })
+        .collect();
+
+    let sleeping: Vec<(&String, &crate::config::CecConfig)> = config
+        .targets
+        .iter()
+        .filter_map(|(name, entry)| entry.cec.as_ref().map(|c| (name, c)))
+        .filter(|(_, c)| c.standby)
+        .filter(|(name, _)| {
+            let key = &config.targets[*name].key;
+            was_active.contains(key) && !desired.contains(key)
+        })
+        .collect();
+
+    for (name, conf) in sleeping {
+        notes.push(match Cec::open(conf.hdmi_port).and_then(|c| c.sleep()) {
+            Ok(msg) => format!("{name}: {msg}"),
+            Err(e) => format!("{name}: CEC standby failed: {e:#}"),
+        });
+    }
+    for (name, conf) in waking {
+        notes.push(
+            match Cec::open(conf.hdmi_port).and_then(|c| c.wake(conf.activate_source)) {
+                Ok(msg) => format!("{name}: {msg}"),
+                Err(e) => format!("{name}: CEC power-on failed: {e:#}"),
+            },
+        );
+    }
+    notes
+}
+
+/// Without the `cec` feature there is no power control — but a config written
+/// for a build that had it still describes some, and silently ignoring that
+/// would be the kind of quiet no-op this tool exists to avoid.
+#[cfg(not(feature = "cec"))]
+fn run_cec(config: &Config, _desired: &[TargetKey], _was_active: &[TargetKey]) -> Vec<String> {
+    let configured: Vec<&str> = config
+        .targets
+        .iter()
+        .filter(|(_, e)| e.cec.is_some())
+        .map(|(n, _)| n.as_str())
+        .collect();
+    if configured.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(
+        "{} configured for CEC power control, but this build has the \"cec\" feature off",
+        configured.join(", ")
+    )]
 }
 
 fn apply_targets(desired: &[TargetKey], dry_run: bool) -> Result<Outcome> {
@@ -278,7 +368,7 @@ fn build_paths(
 }
 
 /// Alternate between two profiles: whichever one isn't currently active wins.
-pub fn switch(config: &Config, a: &str, b: &str, dry_run: bool) -> Result<(String, Outcome)> {
+pub fn switch(config: &Config, a: &str, b: &str, dry_run: bool) -> Result<(String, Report)> {
     for name in [a, b] {
         if !config.profiles.contains_key(name) {
             let known: Vec<&str> = config.profiles.keys().map(|s| s.as_str()).collect();
