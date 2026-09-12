@@ -24,10 +24,11 @@ switched off.
 
 > [!WARNING]
 > **AI-generated code.** This project was written largely by an AI assistant.
-> It reconfigures display topology through the Win32 CCD API and, with the
-> `cec` feature, powers a television on and off over the HDMI cable. It has
-> been verified on exactly one machine — a single RTX 4080 SUPER driving four
-> displays. Review it yourself before running it. It is provided "as is",
+> It reconfigures display topology through the Win32 CCD API, drives monitor
+> settings over DDC/CI, and with the `cec` feature powers a television on and
+> off over the HDMI cable. It has been verified on exactly one machine — a
+> single RTX 4080 SUPER driving four displays. Review it yourself before
+> running it. It is provided "as is",
 > without warranty of any kind (see [LICENSE](LICENSE)); the author accepts no
 > responsibility or liability for any damage, data loss, or unexpected
 > behaviour resulting from its use.
@@ -111,6 +112,8 @@ isn't it. That's the one to bind to a key.
 | `save-profile <name> [--force]` | Record the currently active outputs under a name |
 | `apply-profile <name> [--dry-run]` | Make that profile's outputs the active ones |
 | `switch [<a> <b>] [--dry-run]` | Alternate between two profiles |
+| `vcp get\|set\|switch\|caps` | A monitor's own settings over [DDC/CI](#monitor-settings-over-ddcci) |
+| `cec status\|on\|off` | TV power over [HDMI-CEC](#tv-power-over-hdmi-cec), with the `cec` feature |
 
 `--dry-run` validates a change through `SDC_VALIDATE` without applying it.
 Applying a profile that is already active is a no-op: it returns in well under a
@@ -159,6 +162,51 @@ positions are Windows' business, not this file's.
 
 `edid` and `friendly` are recorded for your benefit and for addressing monitors
 over DDC/CI; neither is used to identify anything for topology purposes.
+
+## Monitor settings over DDC/CI
+
+DDC/CI is the protocol behind the buttons on the front of a monitor — input
+source, brightness, contrast, and on many panels power — reachable over the
+video cable. Features are addressed by **VCP code**, a byte from the MCCS
+standard: `60` is input select, `10` brightness, `D6` power.
+
+```
+monitor-switcher vcp caps <target>                    # what does it support?
+monitor-switcher vcp get <target> <code>
+monitor-switcher vcp set <target> <code> <value>
+monitor-switcher vcp switch <target> <code> <v1> <v2> [...]
+```
+
+Following ControlMyMonitor, **codes are hex and values are decimal**. So
+`ControlMyMonitor.exe /SwitchValue MSI3DD2 60 15 18` becomes:
+
+```
+monitor-switcher vcp switch main 60 15 18
+```
+
+`switch` reads the current value, moves to the next one you listed and wraps —
+stateless, so it can't get out of step with the monitor. If the display is on
+something not in your list, it jumps to the first entry.
+
+Start with `caps`, because a monitor tells you exactly what it accepts:
+
+```
+vcp(02 04 05 ... 10 12 14(01 04 ...) ... D6(04) ... 60(11 12 0F 10) ...)
+```
+
+That is the MSI: input select accepts `0F`/`10`/`11`/`12` (15, 16, 17, 18 in
+decimal — DisplayPort-1, DisplayPort-2, HDMI-1, HDMI-2), brightness is
+supported, and power offers only `04`, "off", with no matching "on".
+
+Targets are named as in your config, or by EDID id so old ControlMyMonitor
+command lines port across unchanged. Only **active** displays can be reached —
+DDC/CI rides on the video link, so a display whose output is switched off has
+no channel and says so.
+
+Not every display implements it. Monitors generally do, televisions generally
+don't — the Philips TV here answers nothing at all, and reports
+`ERROR_GRAPHICS_I2C_ERROR_TRANSMITTING_DATA` when asked. That's what
+[CEC](#tv-power-over-hdmi-cec) is for.
 
 ## TV power over HDMI-CEC
 
@@ -260,15 +308,16 @@ without that last part you get a console window flashing on every press.
 
 ## Not in scope
 
-Input-source switching for *monitors* — telling a panel which of its own video
-inputs to display — is done over DDC/CI, a different protocol from both of the
-above. [ControlMyMonitor][cmm] does it well and is what drives it here. Monitor
-EDID ids are recorded in the config with a future implementation in mind, but
-it isn't written.
+Nothing further is planned. The three protocols a display can be spoken to on
+are all covered, and it is worth knowing which does what, since it isn't
+obvious:
 
-Worth knowing which displays answer what, since it is not obvious: on this desk
-the LG monitor implements DDC/CI fully, including power (`VCP D6`), while the
-Philips TV implements none of it and only speaks CEC. Monitors do DDC/CI;
-televisions do CEC.
+| | Reaches | Used for |
+|---|---|---|
+| CCD | The GPU | Which outputs are active, and the desktop layout |
+| DDC/CI | Monitors, over the video cable | The monitor's own settings — input, brightness, power |
+| CEC | Televisions, over HDMI | Power and input, where DDC/CI isn't implemented |
 
-[cmm]: https://www.nirsoft.net/utils/control_my_monitor.html
+On this desk the LG answers DDC/CI fully including power (`VCP D6`), while the
+Philips TV answers none of it and speaks only CEC. That split — monitors do
+DDC/CI, televisions do CEC — is the normal one rather than a fault.

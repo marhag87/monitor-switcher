@@ -77,6 +77,10 @@ fn hint(code: u32) -> Option<&'static str> {
 pub fn describe(code: u32) -> String {
     let mut out = match name(code) {
         Some(n) => format!("{n} ({code})"),
+        // Plain Win32 codes are small and conventionally written in decimal.
+        // Anything larger is an HRESULT-shaped value — the DDC/CI calls return
+        // these — and is only recognisable, or searchable, in hex.
+        None if code > 0xFFFF => format!("error 0x{code:08X}"),
         None => format!("error {code}"),
     };
     if let Some(m) = message(code) {

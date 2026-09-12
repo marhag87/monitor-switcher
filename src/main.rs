@@ -8,6 +8,7 @@
 mod cec;
 mod cli;
 mod config;
+mod ddc;
 mod display;
 mod winerr;
 
@@ -69,6 +70,11 @@ enum Command {
         /// Which target, if more than one supports CEC
         target: Option<String>,
     },
+    /// Read or change a monitor's own settings over DDC/CI
+    Vcp {
+        #[command(subcommand)]
+        command: cli::vcp::Command,
+    },
     /// Alternate between two profiles
     Switch {
         /// The two profiles to alternate between (defaults to the config's pair)
@@ -129,6 +135,10 @@ fn run() -> Result<()> {
         Command::Cec { action, target } => {
             let config = Config::load(&config_path)?;
             cli::cec::run(&config, action, target.as_deref())
+        }
+        Command::Vcp { command } => {
+            let config = Config::load_or_default(&config_path)?;
+            cli::vcp::run(&config, command)
         }
         Command::Switch { profiles, dry } => {
             let config = Config::load(&config_path)?;
