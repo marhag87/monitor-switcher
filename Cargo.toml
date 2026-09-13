@@ -6,6 +6,23 @@ edition = "2021"
 # covered by the GPL instead; see the note on that feature below.
 license = "MIT"
 
+# The console CLI and the tray daemon need opposite Windows subsystems, which
+# is a property of a binary rather than of the code, so the code lives in a
+# library and each binary is a thin entry point into it.
+[lib]
+name = "monitor_switcher"
+path = "src/lib.rs"
+
+[[bin]]
+name = "monitor-switcher"
+path = "src/main.rs"
+
+# GUI subsystem: no console, so nothing flashes when Windows starts it at
+# sign-in. That is the whole reason the two are separate binaries.
+[[bin]]
+name = "monitor-switcher-tray"
+path = "src/tray_main.rs"
+
 [features]
 # Off by default on purpose. libCEC is GPL-2.0-or-later, so a build with this
 # feature produces a binary covered by the GPL, while the default build links
@@ -32,4 +49,14 @@ features = [
     "Win32_Devices_Display",
     "Win32_Graphics_Gdi",
     "Win32_System_Diagnostics_Debug",
+    "Win32_UI_Input_KeyboardAndMouse",
+    # The tray icon, its menu, and the rest of its small world.
+    "Win32_UI_Shell",                 # Shell_NotifyIconW, ShellExecuteW
+    "Win32_UI_WindowsAndMessaging",   # the window, its messages and its menu
+    "Win32_System_LibraryLoader",     # GetModuleHandleW
+    "Win32_Security",                 # SECURITY_ATTRIBUTES, in CreateMutexW
+    "Win32_System_Threading",         # the single-instance mutex
+    "Win32_System_Registry",          # the start-at-sign-in toggle
+    "Win32_System_Com",               # an apartment for ShellExecuteW
+    "Win32_System_SystemInformation", # GetLocalTime, for log timestamps
 ]

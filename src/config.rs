@@ -24,6 +24,11 @@ pub struct Config {
     /// The two profiles `switch` alternates between when given no arguments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<Vec<String>>,
+    /// Hotkey -> the command it runs, written exactly as you would type it
+    /// after `monitor-switcher`. Read only by the tray daemon; the CLI carries
+    /// them through a rewrite untouched.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub hotkeys: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

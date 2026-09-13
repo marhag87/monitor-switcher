@@ -46,9 +46,10 @@ pub fn run(config: &Config, command: Command) -> Result<()> {
         Command::Get { target, code } => {
             let code = parse_code(&code)?;
             let vcp = open(config, &target)?.get(code)?;
-            println!(
+            crate::log!(
                 "{target}: VCP 0x{code:02X} = {} (max {})",
-                vcp.current, vcp.maximum
+                vcp.current,
+                vcp.maximum
             );
         }
         Command::Set {
@@ -58,7 +59,7 @@ pub fn run(config: &Config, command: Command) -> Result<()> {
         } => {
             let code = parse_code(&code)?;
             open(config, &target)?.set(code, value)?;
-            println!("{target}: VCP 0x{code:02X} set to {value}");
+            crate::log!("{target}: VCP 0x{code:02X} set to {value}");
         }
         Command::Switch {
             target,
@@ -76,10 +77,10 @@ pub fn run(config: &Config, command: Command) -> Result<()> {
                 None => values[0],
             };
             ddc.set(code, next)?;
-            println!("{target}: VCP 0x{code:02X} {current} -> {next}");
+            crate::log!("{target}: VCP 0x{code:02X} {current} -> {next}");
         }
         Command::Caps { target } => {
-            println!("{}", open(config, &target)?.capabilities()?);
+            crate::log!("{}", open(config, &target)?.capabilities()?);
         }
     }
     Ok(())

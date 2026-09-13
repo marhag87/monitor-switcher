@@ -28,7 +28,9 @@ switched off.
 > **AI-generated code.** This project was written largely by an AI assistant.
 > It reconfigures display topology through the Win32 CCD API, drives monitor
 > settings over DDC/CI, and with the `cec` feature powers a television on and
-> off over the HDMI cable. It has been verified on exactly one machine — a
+> off over the HDMI cable. The tray daemon additionally takes global hotkeys
+> and, if you ask it to, adds itself to the per-user `Run` key so it starts at
+> sign-in. It has been verified on exactly one machine — a
 > single RTX 4080 SUPER driving four displays. Review it yourself before
 > running it. It is provided "as is",
 > without warranty of any kind (see [LICENSE](LICENSE)); the author accepts no
@@ -64,10 +66,21 @@ Build it:
 cargo build --release
 ```
 
-Output is a single self-contained `target\release\monitor-switcher.exe`, about
-1 MB. Nothing needs installing; put it wherever you like. Rust stable is pinned
-via `rust-toolchain.toml`, so a machine defaulting to nightly still builds this
-with stable.
+That produces two self-contained executables in `target\release`, about 1.2 MB
+each. Nothing needs installing; put them wherever you like.
+
+| | |
+|---|---|
+| `monitor-switcher.exe` | the command line, below |
+| `monitor-switcher-tray.exe` | a notification-area daemon that runs those same commands from a [global hotkey](#a-hotkey-that-actually-fires) |
+
+They are separate binaries because they need opposite Windows subsystems: one
+has to be able to print to a console, and the other must not own one. The code
+is the same — the daemon runs a hotkey's action by handing the command line the
+words you would otherwise have typed.
+
+Rust stable is pinned via `rust-toolchain.toml`, so a machine defaulting to
+nightly still builds this with stable.
 
 No administrator rights are needed, for building or running.
 
@@ -184,6 +197,22 @@ output — means the same as naming it once.
 `edid` and `friendly` are recorded for your benefit and for addressing monitors
 over DDC/CI; neither is used to identify anything for topology purposes.
 
+`hotkeys` is read only by the tray daemon, and maps a key combination to a
+command written exactly as you would type it after `monitor-switcher`:
+
+```jsonc
+"hotkeys": {
+  "ctrl+alt+shift+d": "switch",
+  "ctrl+alt+shift+s": "vcp switch main 60 15 18"
+}
+```
+
+Modifiers are `ctrl`, `shift`, `alt` and `win`, in any order and any case. A
+combination with no modifier is refused: `RegisterHotKey` would take that key
+system-wide, leaving it unusable everywhere else. Each command is checked with
+the same parser the command line uses, so a typo is reported when the daemon
+starts rather than becoming a key that does nothing.
+
 ## Monitor settings over DDC/CI
 
 DDC/CI is the protocol behind the buttons on the front of a monitor — input
@@ -290,11 +319,44 @@ missing adapter must never stop your monitors switching.
 
 [libcec]: https://github.com/Pulse-Eight/libcec/releases/latest
 
-## Bind it to a key
+## A hotkey that actually fires
 
-Make a shortcut to the exe, put `switch` in its Target after the path, assign a
-Shortcut key, and set **Run: Minimized** — this is a console program, so
-without that last part you get a console window flashing on every press.
+The obvious way to bind this — a shortcut with a Shortcut key in its properties
+— is unreliable, and not in a way you can configure around. Explorer owns those
+bindings, so they die when it restarts; the `.lnk` has to stay in the Start menu
+or on the Desktop or the binding quietly stops working; and there is a lag after
+signing in during which nothing happens. Worst of all, a binding that does not
+fire never says why.
+
+`monitor-switcher-tray.exe` uses `RegisterHotKey`, the actual Win32 mechanism
+for a global hotkey, which **fails loudly at registration** when another program
+already owns a combination instead of by silently never firing:
+
+```
+hotkey problem: ctrl+shift+s: Windows would not register it
+(error 1409: Hot key is already registered.). Another program probably has it.
+```
+
+Put a `hotkeys` block in the config and run it. The icon in the notification
+area is the only sign it is there; right-click for the menu:
+
+| | |
+|---|---|
+| The active profile | at the top, refreshed whenever the display configuration changes — including changes you make in Settings |
+| Each hotkey | listed with its combination, and clickable, so the menu still works when a combination does not |
+| Open config file / Open log file | the daemon has no console, so the log is where a failed action explains itself |
+| Reload config | rebuild the hotkeys after an edit, without restarting |
+| Start automatically at sign-in | writes the usual `HKCU` `Run` value; no administrator rights, same as everything else here |
+| Exit | |
+
+The icon says which state it is in by shape as well as colour: filled for ready,
+a bar while an action is running, a cross when a hotkey could not be registered
+or the last action failed. Actions run on their own thread, so the seconds a TV
+takes to wake never freeze the menu, and a second press while one is still
+running is ignored rather than queued.
+
+Only one daemon runs at a time. A second would fail to register the same
+hotkeys, so it refuses to start and says so.
 
 ## Known caveats
 

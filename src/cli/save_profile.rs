@@ -60,21 +60,21 @@ pub fn run(
     config.profiles.insert(name.to_string(), members.clone());
     config.save(path)?;
 
-    println!("Saved profile \"{name}\": {}", members.join(", "));
+    crate::log!("Saved profile \"{name}\": {}", members.join(", "));
     if !newly_named.is_empty() {
-        println!(
+        crate::log!(
             "Registered {} new target(s): {}",
             newly_named.len(),
             newly_named.join(", ")
         );
-        println!(
+        crate::log!(
             "Rename them in {} if you'd like shorter names.",
             path.display()
         );
     }
     if config.switch.is_none() && config.profiles.len() >= 2 {
         let names: Vec<&str> = config.profiles.keys().map(|s| s.as_str()).collect();
-        println!(
+        crate::log!(
             "\nTo make bare `switch` work, add to {}:\n  \"switch\": [\"{}\", \"{}\"]",
             path.display(),
             names[0],

@@ -61,7 +61,7 @@ pub fn run(monitors: &[Monitor], config: &Config, active_only: bool, json: bool)
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&rows)?);
+        crate::log!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
 
@@ -98,14 +98,14 @@ pub fn run(monitors: &[Monitor], config: &Config, active_only: bool, json: bool)
     print_table(&headers, &rows);
 
     if !adapters.is_empty() {
-        println!();
+        crate::log!();
         for (i, a) in adapters.iter().enumerate() {
-            println!("gpu{i}  {a}");
+            crate::log!("gpu{i}  {a}");
         }
     }
 
     if config.targets.is_empty() {
-        println!(
+        crate::log!(
             "\nNo targets named yet. Arrange your displays in Settings, then run\n  \
              monitor-switcher save-profile <name>\nto record this layout."
         );
@@ -126,7 +126,7 @@ fn format_hz(hz: f64) -> String {
 
 fn print_table(headers: &[&str; 8], rows: &[[String; 8]]) {
     for line in render_table(headers, rows) {
-        println!("{line}");
+        crate::log!("{line}");
     }
 }
 

@@ -56,6 +56,22 @@ pub enum Outcome {
     Applied(Tier),
 }
 
+/// Which profile, if any, describes the outputs that are active right now.
+///
+/// For labelling only — the tray shows it in its menu and tooltip. Deliberately
+/// not used to decide anything: where two profiles describe the same set of
+/// outputs this returns whichever comes first by name, which is harmless in a
+/// label and was a bug in `switch` (see the comment there).
+pub fn current_profile(config: &Config) -> Result<Option<String>> {
+    let active = active_keys()?;
+    for (name, members) in &config.profiles {
+        if same_set(&resolve(config, members)?, &active) {
+            return Ok(Some(name.clone()));
+        }
+    }
+    Ok(None)
+}
+
 fn active_keys() -> Result<Vec<TargetKey>> {
     Ok(super::enumerate()?
         .into_iter()
