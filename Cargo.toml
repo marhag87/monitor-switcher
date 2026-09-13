@@ -2,6 +2,9 @@
 name = "monitor-switcher"
 version = "0.1.0"
 edition = "2021"
+# The project's own source. A build with the `cec` feature links libCEC and is
+# covered by the GPL instead; see the note on that feature below.
+license = "MIT"
 
 [features]
 # Off by default on purpose. libCEC is GPL-2.0-or-later, so a build with this

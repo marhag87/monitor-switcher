@@ -1,0 +1,58 @@
+# Windows-only by necessity: this is a Win32 program end to end — CCD, DDC/CI
+# and the display database — so there is no other platform to build it on.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ci:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml already pins stable and asks for rustfmt and
+      # clippy, so rustup installs exactly that on first use. Pinning it again
+      # here would only give the two places a chance to disagree.
+      - name: Show the toolchain
+        run: rustup show
+
+      - name: Cache cargo and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test
+
+      # What the README tells people to run.
+      - name: Release build
+        run: cargo build --release
+
+      # Every step above compiles the cec code out, so none of them would
+      # notice it breaking. libCEC is not installed on the runner and a build
+      # with this feature would fail at link time — but clippy only
+      # type-checks, and the libcec crate's build script is explicit that a
+      # missing library is a link-time problem rather than a build-script one.
+      # That makes this the most the runner can do, and it is worth doing.
+      - name: Lints, with the cec feature
+        run: cargo clippy --all-targets --features cec -- -D warnings

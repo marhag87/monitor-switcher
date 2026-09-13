@@ -136,22 +136,41 @@ pub fn adapter_device_path(adapter: LUID) -> Result<String> {
     Ok(wide_to_string(&req.adapterDevicePath))
 }
 
-/// Memoising adapter-path resolver — one call per distinct LUID instead of one
-/// per path, since `QDC_ALL_PATHS` returns many paths per adapter.
-#[derive(Default)]
-pub struct AdapterPaths {
-    cache: HashMap<(u32, i32), String>,
+/// Turning the opaque handles in a topology into names.
+///
+/// A topology is just numbers — LUIDs and target ids — and every question about
+/// what they refer to is another trip into Win32. Routing those through a trait
+/// keeps the code that interprets a topology separate from the code that asks
+/// Windows about one, so the interpretation can be exercised against a topology
+/// assembled by hand.
+pub trait DeviceNames {
+    fn adapter_path(&mut self, adapter: LUID) -> Result<String>;
+    fn target_name(&mut self, adapter: LUID, target_id: u32) -> Result<TargetName>;
 }
 
-impl AdapterPaths {
-    pub fn get(&mut self, adapter: LUID) -> Result<String> {
+/// The real thing: asks Windows, and remembers adapter paths.
+///
+/// The memoisation is not an optimisation for its own sake — `QDC_ALL_PATHS`
+/// returns many paths per adapter, so without it the same LUID is resolved
+/// dozens of times per run.
+#[derive(Default)]
+pub struct SystemNames {
+    adapters: HashMap<(u32, i32), String>,
+}
+
+impl DeviceNames for SystemNames {
+    fn adapter_path(&mut self, adapter: LUID) -> Result<String> {
         let key = (adapter.LowPart, adapter.HighPart);
-        if let Some(p) = self.cache.get(&key) {
+        if let Some(p) = self.adapters.get(&key) {
             return Ok(p.clone());
         }
         let path = adapter_device_path(adapter)?;
-        self.cache.insert(key, path.clone());
+        self.adapters.insert(key, path.clone());
         Ok(path)
+    }
+
+    fn target_name(&mut self, adapter: LUID, target_id: u32) -> Result<TargetName> {
+        target_name(adapter, target_id)
     }
 }
 
@@ -259,6 +278,68 @@ pub fn output_technology_name(tech: i32) -> &'static str {
     }
 }
 
+/// Assemble a path the way `QueryDisplayConfig` would hand one back, so a
+/// topology can be built by hand. Writing a union field is safe; only reading
+/// one is not, so this needs no `unsafe` of its own.
+#[cfg(test)]
+pub fn test_path(
+    adapter: u32,
+    target_id: u32,
+    source_id: u32,
+    active: bool,
+    available: bool,
+) -> DISPLAYCONFIG_PATH_INFO {
+    use windows::Win32::Graphics::Gdi::{
+        DISPLAYCONFIG_PATH_ACTIVE, DISPLAYCONFIG_PATH_MODE_IDX_INVALID,
+    };
+
+    let luid = LUID {
+        LowPart: adapter,
+        HighPart: 0,
+    };
+    let mut path = DISPLAYCONFIG_PATH_INFO::default();
+    path.sourceInfo.adapterId = luid;
+    path.sourceInfo.id = source_id;
+    path.sourceInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    path.targetInfo.adapterId = luid;
+    path.targetInfo.id = target_id;
+    path.targetInfo.targetAvailable = available.into();
+    path.targetInfo.Anonymous.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    path.flags = if active { DISPLAYCONFIG_PATH_ACTIVE } else { 0 };
+    path
+}
+
+/// Canned answers, so the topology-interpreting code can be tested without a
+/// GPU. Mirrors the real thing's semantics in the one way that matters: an
+/// unknown adapter is an error, while an unknown target merely has no name —
+/// which is what Windows reports for an output that is switched off.
+#[cfg(test)]
+#[derive(Default)]
+pub struct FixedNames {
+    /// `LUID.LowPart` -> adapter device path.
+    pub adapters: HashMap<u32, String>,
+    /// `(LUID.LowPart, target id)` -> what `GET_TARGET_NAME` would answer.
+    pub targets: HashMap<(u32, u32), TargetName>,
+}
+
+#[cfg(test)]
+impl DeviceNames for FixedNames {
+    fn adapter_path(&mut self, adapter: LUID) -> Result<String> {
+        self.adapters
+            .get(&adapter.LowPart)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no adapter for LUID {}", adapter.LowPart))
+    }
+
+    fn target_name(&mut self, adapter: LUID, target_id: u32) -> Result<TargetName> {
+        Ok(self
+            .targets
+            .get(&(adapter.LowPart, target_id))
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
 fn wide_to_string(buf: &[u16]) -> String {
     let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
     String::from_utf16_lossy(&buf[..len]).trim().to_string()
@@ -269,5 +350,233 @@ fn non_empty(s: String) -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::Win32::Devices::Display::{
+        DISPLAYCONFIG_MODE_INFO_TYPE_TARGET, DISPLAYCONFIG_SOURCE_MODE,
+    };
+    use windows::Win32::Foundation::POINTL;
+    use windows::Win32::Graphics::Gdi::DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+
+    /// A path whose source half points at `mode_idx`.
+    ///
+    /// Writing a union field is safe — only reading one is not — so a topology
+    /// can be assembled here without any `unsafe` of its own, and handed to
+    /// `source_mode` to exercise the reads that do need it.
+    fn path_at(mode_idx: u32) -> DISPLAYCONFIG_PATH_INFO {
+        let mut path = DISPLAYCONFIG_PATH_INFO::default();
+        path.sourceInfo.Anonymous.modeInfoIdx = mode_idx;
+        path
+    }
+
+    fn source_mode_info(width: u32, height: u32, x: i32, y: i32) -> DISPLAYCONFIG_MODE_INFO {
+        let mut info = DISPLAYCONFIG_MODE_INFO {
+            infoType: DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE,
+            ..Default::default()
+        };
+        info.Anonymous.sourceMode = DISPLAYCONFIG_SOURCE_MODE {
+            width,
+            height,
+            position: POINTL { x, y },
+            ..Default::default()
+        };
+        info
+    }
+
+    #[test]
+    fn source_mode_reads_the_mode_a_path_points_at() {
+        let topo = Topology {
+            paths: Vec::new(),
+            modes: vec![
+                source_mode_info(1920, 1080, 0, 0),
+                source_mode_info(3840, 2160, -2560, 167),
+            ],
+        };
+
+        assert_eq!(
+            topo.source_mode(&path_at(0)),
+            Some(SourceMode {
+                width: 1920,
+                height: 1080,
+                x: 0,
+                y: 0
+            })
+        );
+        // Displays left of or above the primary sit at negative coordinates;
+        // the position fields are signed and must stay that way.
+        assert_eq!(
+            topo.source_mode(&path_at(1)),
+            Some(SourceMode {
+                width: 3840,
+                height: 2160,
+                x: -2560,
+                y: 167
+            })
+        );
+    }
+
+    #[test]
+    fn source_mode_declines_an_index_past_the_end() {
+        let topo = Topology {
+            paths: Vec::new(),
+            modes: vec![source_mode_info(1920, 1080, 0, 0)],
+        };
+        assert_eq!(topo.source_mode(&path_at(1)), None);
+        assert_eq!(topo.source_mode(&path_at(9999)), None);
+    }
+
+    /// The value `build_paths` writes into every path it sends to Windows. It
+    /// must read back as "no mode", not as an enormous index.
+    #[test]
+    fn source_mode_declines_the_invalid_index_sentinel() {
+        let topo = Topology {
+            paths: Vec::new(),
+            modes: vec![source_mode_info(1920, 1080, 0, 0)],
+        };
+        assert_eq!(
+            topo.source_mode(&path_at(DISPLAYCONFIG_PATH_MODE_IDX_INVALID)),
+            None
+        );
+    }
+
+    /// The union is only a source mode when `infoType` says so. Reading it as
+    /// one regardless would hand back a target mode's bytes reinterpreted as a
+    /// resolution — the exact mistake the discriminant check prevents.
+    #[test]
+    fn source_mode_declines_an_entry_that_is_not_a_source_mode() {
+        let target = DISPLAYCONFIG_MODE_INFO {
+            infoType: DISPLAYCONFIG_MODE_INFO_TYPE_TARGET,
+            ..Default::default()
+        };
+        let topo = Topology {
+            paths: Vec::new(),
+            modes: vec![target],
+        };
+        assert_eq!(topo.source_mode(&path_at(0)), None);
+    }
+
+    #[test]
+    fn source_mode_declines_when_there_are_no_modes_at_all() {
+        let topo = Topology {
+            paths: Vec::new(),
+            modes: Vec::new(),
+        };
+        assert_eq!(topo.source_mode(&path_at(0)), None);
+    }
+
+    // --- decoding the fixed-size buffers the Win32 calls fill in ---
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn wide_to_string_stops_at_the_terminator() {
+        let mut buf = wide("DISPLAY1");
+        buf.push(0);
+        buf.extend(wide("leftover rubbish"));
+        assert_eq!(wide_to_string(&buf), "DISPLAY1");
+    }
+
+    #[test]
+    fn wide_to_string_accepts_a_buffer_with_no_terminator() {
+        assert_eq!(wide_to_string(&wide("DISPLAY1")), "DISPLAY1");
+    }
+
+    #[test]
+    fn wide_to_string_handles_empty_and_immediately_terminated_buffers() {
+        assert_eq!(wide_to_string(&[]), "");
+        assert_eq!(wide_to_string(&[0]), "");
+        assert_eq!(wide_to_string(&[0, 0, 0]), "");
+    }
+
+    #[test]
+    fn wide_to_string_trims_padding() {
+        assert_eq!(wide_to_string(&wide("  LG ULTRAGEAR  ")), "LG ULTRAGEAR");
+    }
+
+    /// An unpaired surrogate must come back lossily rather than panicking: this
+    /// decodes whatever bytes the driver put in the buffer.
+    #[test]
+    fn wide_to_string_survives_invalid_utf16() {
+        let decoded = wide_to_string(&[0xD800, 0x0041]);
+        assert!(decoded.contains('A'), "{decoded:?}");
+    }
+
+    #[test]
+    fn non_empty_maps_blank_to_none() {
+        assert_eq!(non_empty(String::new()), None);
+        assert_eq!(non_empty("x".to_string()), Some("x".to_string()));
+    }
+
+    // --- EDID id decoding ---
+
+    /// The four monitors this was built against. The manufacturer ids are the
+    /// little-endian u16 Windows reports for the big-endian pair EDID stores —
+    /// Dell's `10 AC` arrives as `0xAC10` — so this pins the byte swap as well
+    /// as the 5-bit unpacking.
+    #[test]
+    fn format_edid_id_decodes_real_monitors() {
+        assert_eq!(format_edid_id(0x6936, 0x3DD2), "MSI3DD2");
+        assert_eq!(format_edid_id(0x6D1E, 0x5BD3), "GSM5BD3");
+        assert_eq!(format_edid_id(0xAC10, 0xA0BC), "DELA0BC");
+        assert_eq!(format_edid_id(0x0C41, 0x01EA), "PHL01EA");
+    }
+
+    /// Dropping the swap would decode the same bytes as something else
+    /// entirely; this fails if anyone decides the swap looks redundant.
+    #[test]
+    fn format_edid_id_is_sensitive_to_the_byte_swap() {
+        assert_ne!(
+            format_edid_id(0xAC10, 0xA0BC),
+            format_edid_id(0x10AC, 0xA0BC)
+        );
+    }
+
+    #[test]
+    fn format_edid_id_pads_the_product_code_to_four_digits() {
+        assert_eq!(format_edid_id(0x0C41, 0x0001), "PHL0001");
+    }
+
+    /// Five bits hold 0..=31, but only 1..=26 name a letter. Anything else is
+    /// a manufacturer id that was never filled in.
+    #[test]
+    fn format_edid_id_marks_letters_that_are_out_of_range() {
+        assert_eq!(format_edid_id(0x0000, 0x0000), "???0000");
+        // 27, 27, 27 — in range for the field, outside the alphabet.
+        let packed: u16 = (27 << 10) | (27 << 5) | 27;
+        assert_eq!(format_edid_id(packed.swap_bytes(), 0x1234), "???1234");
+    }
+
+    #[test]
+    fn output_technology_names_the_connectors_in_use_here() {
+        use windows::Win32::Devices::Display as d;
+        assert_eq!(
+            output_technology_name(d::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_HDMI.0),
+            "HDMI"
+        );
+        assert_eq!(
+            output_technology_name(d::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_DISPLAYPORT_EXTERNAL.0),
+            "DisplayPort"
+        );
+        // 0x80000000, which is also i32::MIN — so this is the value an
+        // "obviously out of range" probe would accidentally land on.
+        assert_eq!(
+            output_technology_name(d::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_INTERNAL.0),
+            "Internal"
+        );
+        assert_eq!(
+            output_technology_name(d::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_OTHER.0),
+            "other"
+        );
+        // A real connector type the match does not name.
+        assert_eq!(
+            output_technology_name(d::DISPLAYCONFIG_OUTPUT_TECHNOLOGY_SVIDEO.0),
+            "other"
+        );
     }
 }

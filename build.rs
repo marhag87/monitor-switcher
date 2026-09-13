@@ -12,7 +12,7 @@
 //!    from anywhere to work.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Output;
 
 const DEFAULT_LIBCEC_DIR: &str = r"C:\Program Files\Pulse-Eight\USB-CEC Adapter";
 const TARGET: &str = "x86_64-pc-windows-msvc";
@@ -49,21 +49,40 @@ fn main() {
 ///
 /// This takes precedence over the search path the libcec crate emits (which
 /// points at the install directory, where there is no import library).
+///
+/// Both tools are run through the `Command` `windows_registry::find` hands back,
+/// rather than a fresh one built from its program path. That `Command` arrives
+/// with `PATH`, `LIB` and `INCLUDE` already pointing at the matching MSVC and
+/// Windows Kits directories, and dumpbin and lib are front-ends that load their
+/// real implementation from those directories at runtime. Keeping only the
+/// program path happens to work where every dependency sits next to the
+/// executable — Windows searches there first — and fails wherever one does not.
 fn generate_import_library(dll: &Path, out: &Path) {
-    let Some(dumpbin) = cc::windows_registry::find(TARGET, "dumpbin.exe") else {
+    let Some(mut dumpbin) = cc::windows_registry::find(TARGET, "dumpbin.exe") else {
         println!("cargo:warning=dumpbin.exe not found; cannot generate cec.lib");
         return;
     };
-    let Some(lib_exe) = cc::windows_registry::find(TARGET, "lib.exe") else {
+    let Some(mut lib_exe) = cc::windows_registry::find(TARGET, "lib.exe") else {
         println!("cargo:warning=lib.exe not found; cannot generate cec.lib");
         return;
     };
 
-    let exports = Command::new(dumpbin.get_program())
+    let exports = dumpbin
         .arg("/exports")
         .arg(dll)
         .output()
         .expect("running dumpbin");
+    // `output()` returning Ok only means the process ran. Skipping this check
+    // let a failed dumpbin through with empty stdout, which parsed to zero
+    // exports and then reported itself as an unreadable DLL — while dumpbin's
+    // own account of the problem was discarded.
+    assert!(
+        exports.status.success(),
+        "dumpbin could not read {} ({})\n{}",
+        dll.display(),
+        exports.status,
+        tool_output(&exports)
+    );
     let text = String::from_utf8_lossy(&exports.stdout);
 
     let mut def = String::from("EXPORTS\n");
@@ -81,20 +100,48 @@ fn generate_import_library(dll: &Path, out: &Path) {
             }
         }
     }
-    assert!(count > 0, "no exports parsed from {}", dll.display());
+    // Distinct from the failure above: dumpbin was happy, so this is either not
+    // the DLL we think it is or a change in the output format the parser above
+    // relies on. Either way the next question is what dumpbin actually printed.
+    assert!(
+        count > 0,
+        "dumpbin read {} but no exports were found in its output.\nWhat it printed:\n{}",
+        dll.display(),
+        text.lines().take(20).collect::<Vec<_>>().join("\n")
+    );
 
     let def_path = out.join("cec.def");
     std::fs::write(&def_path, def).expect("writing cec.def");
 
-    let status = Command::new(lib_exe.get_program())
+    // Captured rather than inherited, so a successful run stays quiet and a
+    // failed one has its reason attached to the panic instead of scrolling past
+    // in the build log.
+    let lib_run = lib_exe
         .arg(format!("/def:{}", def_path.display()))
         .arg("/machine:x64")
         .arg(format!("/out:{}", out.join("cec.lib").display()))
-        .status()
+        .output()
         .expect("running lib.exe");
-    assert!(status.success(), "lib.exe failed generating cec.lib");
+    assert!(
+        lib_run.status.success(),
+        "lib.exe could not build cec.lib from {} ({})\n{}",
+        def_path.display(),
+        lib_run.status,
+        tool_output(&lib_run)
+    );
 
     println!("cargo:rustc-link-search=native={}", out.display());
+}
+
+/// Everything a tool printed, whichever stream it chose: lib.exe reports its
+/// errors on stdout, dumpbin on stderr.
+fn tool_output(out: &Output) -> String {
+    [&out.stdout, &out.stderr]
+        .into_iter()
+        .map(|stream| String::from_utf8_lossy(stream).trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Windows searches the executable's own directory first, so a copy there makes

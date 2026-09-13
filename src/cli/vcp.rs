@@ -107,11 +107,25 @@ fn open(config: &Config, target: &str) -> Result<Ddc> {
             None => m.name.edid.as_deref() == Some(target),
         })
         .ok_or_else(|| {
-            let known: Vec<&str> = config.targets.keys().map(|s| s.as_str()).collect();
-            anyhow::anyhow!(
-                "no display named \"{target}\"; configured targets: {}",
-                known.join(", ")
-            )
+            let connected: Vec<String> = monitors.iter().map(|m| m.label()).collect();
+            match wanted {
+                // The name is fine and the config is fine; the output it names
+                // is not there. Saying "no display named" would send you to
+                // edit a config that has nothing wrong with it.
+                Some(key) => anyhow::anyhow!(
+                    "\"{target}\" names target {} on that adapter, which is not connected.\n  Connected now: {}",
+                    key.target_id,
+                    connected.join(", ")
+                ),
+                None => {
+                    let known: Vec<&str> = config.targets.keys().map(|s| s.as_str()).collect();
+                    anyhow::anyhow!(
+                        "no display named \"{target}\"; configured targets: {}\n  A display can also be named by its EDID id. Connected now: {}",
+                        known.join(", "),
+                        connected.join(", ")
+                    )
+                }
+            }
         })?;
 
     // DDC/CI rides on the video link, so there is nothing to talk to when the
@@ -124,4 +138,52 @@ fn open(config: &Config, target: &str) -> Result<Ddc> {
         );
     };
     Ddc::open(gdi)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_code_reads_bare_hex() {
+        assert_eq!(parse_code("60").unwrap(), 0x60);
+        assert_eq!(parse_code("10").unwrap(), 0x10);
+        assert_eq!(parse_code("D6").unwrap(), 0xD6);
+        assert_eq!(parse_code("d6").unwrap(), 0xD6);
+    }
+
+    /// Ten in this notation is sixteen. Getting that wrong would silently
+    /// address the wrong feature, so it is worth stating outright.
+    #[test]
+    fn parse_code_is_hex_not_decimal() {
+        assert_eq!(parse_code("10").unwrap(), 16);
+        assert_ne!(parse_code("10").unwrap(), 10);
+    }
+
+    #[test]
+    fn parse_code_accepts_an_optional_prefix() {
+        assert_eq!(parse_code("0x60").unwrap(), 0x60);
+        assert_eq!(parse_code("0X60").unwrap(), 0x60);
+    }
+
+    #[test]
+    fn parse_code_rejects_what_is_not_a_code() {
+        for bad in ["", "zz", "-1", "6 0", "100"] {
+            assert!(parse_code(bad).is_err(), "{bad:?} was accepted");
+        }
+    }
+
+    /// A VCP code is one byte, so FF is the ceiling.
+    #[test]
+    fn parse_code_spans_the_whole_byte() {
+        assert_eq!(parse_code("00").unwrap(), 0x00);
+        assert_eq!(parse_code("FF").unwrap(), 0xFF);
+    }
+
+    #[test]
+    fn parse_code_says_what_it_wanted() {
+        let err = parse_code("nonsense").unwrap_err().to_string();
+        assert!(err.contains("nonsense"), "{err}");
+        assert!(err.contains("hex"), "{err}");
+    }
 }

@@ -125,7 +125,19 @@ fn format_hz(hz: f64) -> String {
 }
 
 fn print_table(headers: &[&str; 8], rows: &[[String; 8]]) {
-    let mut width = headers.map(|h| h.len());
+    for line in render_table(headers, rows) {
+        println!("{line}");
+    }
+}
+
+/// The table as lines, header first.
+///
+/// Separate from printing it so the column arithmetic can be checked directly
+/// rather than by capturing stdout.
+fn render_table(headers: &[&str; 8], rows: &[[String; 8]]) -> Vec<String> {
+    // Column widths in characters, not bytes: a monitor name is whatever the
+    // panel calls itself, and counting bytes would over-pad anything non-ASCII.
+    let mut width = headers.map(|h| h.chars().count());
     for row in rows {
         for (i, cell) in row.iter().enumerate() {
             width[i] = width[i].max(cell.chars().count());
@@ -142,8 +154,122 @@ fn print_table(headers: &[&str; 8], rows: &[[String; 8]]) {
         }
         s.trim_end().to_string()
     };
-    println!("{}", line(&headers.map(String::from)));
-    for row in rows {
-        println!("{}", line(row));
+
+    let mut out = vec![line(&headers.map(String::from))];
+    out.extend(rows.iter().map(line));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The four rates on the desk this was written for. The point of the
+    /// function is that 59.951 and 59.95 are different panels and must not
+    /// both round to 60.
+    const HEADERS: [&str; 8] = [
+        "NAME", "STATE", "GPU", "TARGET", "CONN", "MODE", "POSITION", "MONITOR",
+    ];
+
+    fn cells(values: [&str; 8]) -> [String; 8] {
+        values.map(String::from)
+    }
+
+    /// Every column starts at the same offset on every line, header included.
+    #[test]
+    fn render_table_aligns_each_column_across_every_line() {
+        let rows = [
+            cells([
+                "main",
+                "active",
+                "gpu0",
+                "37121",
+                "DisplayPort",
+                "3840x2160",
+                "0,0",
+                "MSI",
+            ]),
+            cells([
+                "sidemon", "inactive", "gpu0", "37124", "HDMI", "-", "-", "LG",
+            ]),
+        ];
+        let out = render_table(&HEADERS, &rows);
+        assert_eq!(out.len(), 3);
+
+        let sources = [cells(HEADERS), rows[0].clone(), rows[1].clone()];
+        // Widest cell per column, plus the two-space separator.
+        let widths = [7usize, 8, 4, 6, 11, 9, 8];
+        let mut offset = 0;
+        for (col, width) in widths.iter().enumerate() {
+            for (line, source) in out.iter().zip(&sources) {
+                assert!(
+                    line[offset..].starts_with(&source[col]),
+                    "column {col} of {line:?} does not begin at {offset}"
+                );
+            }
+            offset += width + 2;
+        }
+    }
+
+    /// The last column is not padded, so no row carries invisible trailing
+    /// whitespace into a terminal or a copy-paste.
+    #[test]
+    fn render_table_leaves_no_trailing_whitespace() {
+        let rows = [cells(["a", "b", "c", "d", "e", "f", "g", "h"])];
+        for line in render_table(&HEADERS, &rows) {
+            assert_eq!(line, line.trim_end(), "trailing space in {line:?}");
+        }
+    }
+
+    #[test]
+    fn render_table_of_no_rows_is_just_the_header() {
+        let out = render_table(&HEADERS, &[]);
+        assert_eq!(
+            out,
+            ["NAME  STATE  GPU  TARGET  CONN  MODE  POSITION  MONITOR"]
+        );
+    }
+
+    /// Widths are counted in characters. Measuring bytes would pad a column
+    /// holding any non-ASCII name one place too far for every row in it.
+    #[test]
+    fn render_table_measures_characters_not_bytes() {
+        let headers = ["N", "S", "G", "T", "C", "M", "P", "MONITOR"];
+        let rows = [
+            // Seven characters, eight bytes.
+            cells(["ölandet", "b", "c", "d", "e", "f", "g", "h"]),
+            cells(["1234567", "b", "c", "d", "e", "f", "g", "h"]),
+        ];
+        let out = render_table(&headers, &rows);
+        for line in &out[1..] {
+            let chars: Vec<char> = line.chars().collect();
+            assert_eq!(
+                chars[9], 'b',
+                "second column should start at character 9 of {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn format_hz_keeps_the_rates_apart() {
+        assert_eq!(format_hz(60.0), "60Hz");
+        assert_eq!(format_hz(59.951), "59.951Hz");
+        assert_eq!(format_hz(59.95), "59.95Hz");
+        assert_eq!(format_hz(239.99), "239.99Hz");
+    }
+
+    /// Rationals that are integers in all but the last decimal place — which is
+    /// how the API reports a plain 60Hz — print as integers.
+    #[test]
+    fn format_hz_treats_a_near_integer_as_an_integer() {
+        assert_eq!(format_hz(59.9999), "60Hz");
+        assert_eq!(format_hz(60.0001), "60Hz");
+        assert_eq!(format_hz(144.0), "144Hz");
+    }
+
+    #[test]
+    fn format_hz_drops_only_trailing_zeros() {
+        assert_eq!(format_hz(120.5), "120.5Hz");
+        assert_eq!(format_hz(100.25), "100.25Hz");
     }
 }

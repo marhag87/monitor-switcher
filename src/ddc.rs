@@ -64,6 +64,13 @@ impl Ddc {
         Ok(Self { monitors })
     }
 
+    /// The channel commands are sent on.
+    ///
+    /// One `HMONITOR` can front several physical monitors — a clone group is
+    /// reported that way — and this takes the first. Every command here is
+    /// aimed at a display the caller named on its own, so a clone group is not
+    /// an arrangement this tool sets up; meeting one, it talks to the first
+    /// panel rather than refusing.
     fn handle(&self) -> windows::Win32::Foundation::HANDLE {
         self.monitors[0].hPhysicalMonitor
     }
@@ -202,4 +209,89 @@ fn device_name(hmonitor: HMONITOR) -> Option<String> {
         .position(|&c| c == 0)
         .unwrap_or(info.szDevice.len());
     Some(String::from_utf16_lossy(&info.szDevice[..end]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Enumerate the way `find_hmonitor` does, so the callback and the `LPARAM`
+    /// round-trip are what produce this list.
+    fn enumerate() -> Vec<HMONITOR> {
+        let mut found: Vec<HMONITOR> = Vec::new();
+        // SAFETY: same contract as find_hmonitor's call — the callback only
+        // appends to the Vec pointed at by dwdata, which outlives the call.
+        let ok = unsafe {
+            EnumDisplayMonitors(
+                None,
+                None,
+                Some(collect),
+                LPARAM(&mut found as *mut Vec<HMONITOR> as isize),
+            )
+        };
+        assert!(ok.as_bool(), "EnumDisplayMonitors failed");
+        found
+    }
+
+    /// The callback writes through a raw pointer to a `Vec` owned by the
+    /// caller's frame. If that round-trip were wrong the list would come back
+    /// empty on a machine that plainly has displays.
+    #[test]
+    fn the_enumeration_callback_collects_the_attached_displays() {
+        let found = enumerate();
+        // A session with no displays at all is legitimate, so this asserts the
+        // handles are usable rather than that there are any.
+        for hmonitor in &found {
+            assert!(!hmonitor.0.is_null(), "a null HMONITOR was collected");
+        }
+    }
+
+    /// `GetMonitorInfoW` fills a fixed-size `szDevice` buffer that has to be
+    /// decoded at its NUL. A name Windows just gave us must find its way back
+    /// to the same handle.
+    #[test]
+    fn every_attached_display_is_findable_by_the_name_windows_reports() {
+        for hmonitor in enumerate() {
+            let Some(name) = device_name(hmonitor) else {
+                continue;
+            };
+            assert!(
+                name.starts_with(r"\\.\"),
+                "unexpected GDI device name {name:?}"
+            );
+            let again = find_hmonitor(&name).expect("a name Windows itself reported");
+            assert_eq!(again.0, hmonitor.0, "{name} resolved to a different handle");
+        }
+    }
+
+    #[test]
+    fn find_hmonitor_rejects_a_name_that_drives_nothing() {
+        let err = find_hmonitor(r"\\.\DISPLAY_THAT_DOES_NOT_EXIST")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("DISPLAY_THAT_DOES_NOT_EXIST"), "{err}");
+    }
+
+    /// A partial prefix of a real name must not match: the comparison is whole
+    /// names, not a substring search over a buffer that may hold more bytes.
+    #[test]
+    fn find_hmonitor_does_not_match_on_a_prefix() {
+        let Some(name) = enumerate().into_iter().find_map(device_name) else {
+            return; // no displays attached; nothing to prefix
+        };
+        let prefix = &name[..name.len() - 1];
+        assert!(
+            find_hmonitor(prefix).is_err(),
+            "{prefix:?} matched, but only {name:?} exists"
+        );
+    }
+
+    /// Both DDC/CI failure modes — a display that does not implement a feature,
+    /// and one that does not speak DDC/CI at all — surface through this.
+    #[test]
+    fn unsupported_names_the_code_and_explains_both_causes() {
+        let text = unsupported(0x10);
+        assert!(text.contains("0x10"), "{text}");
+        assert!(text.contains("DDC/CI"), "{text}");
+    }
 }

@@ -1,4 +1,4 @@
-//! Display topology: enumeration, identity, and (later) applying profiles.
+//! Display topology: enumeration, identity, and applying profiles.
 //!
 //! This module owns the CCD API. A future DDC/CI module (monitor input
 //! switching, VCP features) is a sibling, not a submodule — it talks to a
@@ -20,5 +20,5 @@ use windows::Win32::Devices::Display::QDC_ALL_PATHS;
 /// what makes re-enabling one possible.
 pub fn enumerate() -> Result<Vec<Monitor>> {
     let topo = ccd::query(QDC_ALL_PATHS)?;
-    identity::enumerate(&topo)
+    identity::enumerate(&topo, &mut ccd::SystemNames::default())
 }

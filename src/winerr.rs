@@ -93,3 +93,82 @@ pub fn describe(code: u32) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_covers_the_documented_codes_and_nothing_else() {
+        assert_eq!(name(0), Some("ERROR_SUCCESS"));
+        assert_eq!(name(5), Some("ERROR_ACCESS_DENIED"));
+        assert_eq!(name(1610), Some("ERROR_BAD_CONFIGURATION"));
+        assert_eq!(name(1234), None);
+    }
+
+    #[test]
+    fn describe_leads_with_the_symbolic_name_and_the_number() {
+        assert!(
+            describe(5).starts_with("ERROR_ACCESS_DENIED (5)"),
+            "{}",
+            describe(5)
+        );
+    }
+
+    /// Exercises `FormatMessageW`. The wording is whatever this machine's locale
+    /// says, so this checks that a message came back and was attached — not what
+    /// it reads.
+    #[test]
+    fn describe_attaches_the_systems_own_message() {
+        let text = describe(5);
+        let (head, tail) = text
+            .split_once(": ")
+            .unwrap_or_else(|| panic!("no message was attached to {text:?}"));
+        assert_eq!(head, "ERROR_ACCESS_DENIED (5)");
+        assert!(!tail.trim().is_empty(), "{text}");
+    }
+
+    #[test]
+    fn describe_adds_a_hint_where_the_system_text_is_unhelpful() {
+        for (code, expected) in [
+            (31u32, "cannot drive"),
+            (1610, "display database"),
+            (5, "Remote"),
+            (50, "WDDM"),
+        ] {
+            let text = describe(code);
+            assert!(text.contains(expected), "{code}: {text}");
+        }
+    }
+
+    #[test]
+    fn describe_leaves_out_a_hint_where_there_is_none() {
+        assert!(!describe(0).contains("\n  "), "{}", describe(0));
+    }
+
+    /// The DDC/CI calls answer with HRESULT-shaped values. This one is what the
+    /// Philips TV really returns when asked for a VCP feature, and it is only
+    /// recognisable — or searchable — in hex.
+    #[test]
+    fn describe_renders_hresult_shaped_codes_in_hex() {
+        let text = describe(0xC026_2582);
+        assert!(text.starts_with("error 0xC0262582"), "{text}");
+    }
+
+    #[test]
+    fn describe_renders_small_unknown_codes_in_decimal() {
+        assert!(
+            describe(1234).starts_with("error 1234"),
+            "{}",
+            describe(1234)
+        );
+    }
+
+    /// Every code must render into something, whether or not Windows knows it.
+    #[test]
+    fn describe_never_returns_nothing() {
+        for code in [0u32, 1, 122, 4321, 0x7FFF, 0x1_0000, u32::MAX] {
+            assert!(!describe(code).is_empty(), "empty for {code}");
+        }
+    }
+}

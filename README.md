@@ -1,5 +1,7 @@
 # monitor-switcher
 
+[![CI](https://github.com/marhag87/monitor-switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/marhag87/monitor-switcher/actions/workflows/ci.yml)
+
 **Swap which monitors are switched on, from a single keypress.**
 
 A graphics card can drive more displays than it can drive *at once*. Four
