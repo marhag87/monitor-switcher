@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # rust-toolchain.toml already pins stable and asks for rustfmt and
       # clippy, so rustup installs exactly that on first use. Pinning it again
@@ -25,7 +25,7 @@ jobs:
         run: rustup show
 
       - name: Cache cargo and target
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry/index/

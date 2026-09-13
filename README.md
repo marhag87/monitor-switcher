@@ -71,6 +71,20 @@ with stable.
 
 No administrator rights are needed, for building or running.
 
+Check it:
+
+```
+cargo test
+```
+
+The tests need no displays and no GPU. The code that interprets a display
+topology is kept apart from the code that asks Windows for one, so it can be run
+against a topology built in the test. What genuinely talks to hardware —
+`SetDisplayConfig`, the DDC/CI calls — is left alone, because standing a mock in
+front of it would only test the mock. [CI](.github/workflows/ci.yml) runs
+formatting, clippy, the tests and a release build on Windows, and also lints the
+`cec` feature, which every other step compiles out.
+
 The default build has no dependency on libCEC and no TV power control; see
 [TV power over HDMI-CEC](#tv-power-over-hdmi-cec) to turn that on.
 
@@ -105,8 +119,11 @@ monitor-switcher apply-profile tv
 monitor-switcher switch
 ```
 
-`switch` looks at what's currently on, and applies whichever of the two profiles
-isn't it. That's the one to bind to a key.
+`switch` compares what's currently on against the first of the two profiles: if
+that is what you're looking at you get the second, and otherwise the first. So
+it alternates, and from any *other* arrangement it goes to the first profile
+rather than refusing — which is what makes a hotkey a way back out of an odd
+state. That's the one to bind to a key.
 
 | Command | |
 |---|---|
@@ -160,7 +177,9 @@ are usually nicer:
 ```
 
 A profile is just the set of outputs that should be on. Resolutions and
-positions are Windows' business, not this file's.
+positions are Windows' business, not this file's. It really is a set: naming an
+output twice — directly, or through two target names that point at the same
+output — means the same as naming it once.
 
 `edid` and `friendly` are recorded for your benefit and for addressing monitors
 over DDC/CI; neither is used to identify anything for topology purposes.
@@ -299,14 +318,18 @@ without that last part you get a console window flashing on every press.
 - **The output ceiling is real and reported as `ERROR_GEN_FAILURE`.** Asking for
   more simultaneous outputs than the card can drive fails with a code whose
   system text ("a device attached to the system is not functioning") is
-  unhelpful, so the message spells out the likely cause.
+  unhelpful, so the message spells out the likely cause. The ceiling can also
+  bite one step earlier, as "no free GPU source", when there is no way to give
+  every wanted output a source of its own to be driven from.
 - **Path priority is not preserved.** `SDC_ALLOW_PATH_ORDER_CHANGES` lets the
   database match on the *set* of outputs rather than their order, which is what
   makes the lookup reliable. If path priority matters to you, it isn't being
   controlled here.
 - **One machine.** Verified on a single-GPU desktop with four displays, three
   active at a time. The `(adapter device path, target id)` design should
-  generalise to multiple GPUs, but that is untested.
+  generalise to multiple GPUs, but that is untested. A green CI badge does not
+  change this: that runner has no displays, so it proves the code builds and its
+  logic holds, not that any of it drives real hardware correctly.
 
 ## Not in scope
 
