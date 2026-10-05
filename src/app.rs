@@ -70,6 +70,11 @@ pub enum Command {
         #[command(subcommand)]
         command: cli::vcp::Command,
     },
+    /// Turn Windows' "Activate on hover" (focus follows the mouse) on or off
+    Hover {
+        #[command(subcommand)]
+        command: cli::hover::Command,
+    },
     /// Alternate between two profiles
     Switch {
         /// The two profiles to alternate between (defaults to the config's pair)
@@ -151,6 +156,10 @@ pub fn run(cli: Cli) -> Result<()> {
         Command::Vcp { command } => {
             let config = Config::load_or_default(&config_path)?;
             cli::vcp::run(&config, command)
+        }
+        Command::Hover { command } => {
+            let config = Config::load_or_default(&config_path)?;
+            cli::hover::run(&config, command)
         }
         Command::Switch { profiles, dry } => {
             let config = Config::load(&config_path)?;
@@ -281,6 +290,17 @@ mod tests {
 
         let bad = Cli::try_parse_from(["monitor-switcher", "swtich"]);
         assert!(bad.is_err(), "a misspelled subcommand was accepted");
+    }
+
+    #[test]
+    fn hover_delay_is_optional_and_numeric() {
+        let parse = |line: &str| {
+            Cli::try_parse_from(std::iter::once("monitor-switcher".to_string()).chain(words(line)))
+        };
+        assert!(parse("hover delay").is_ok());
+        assert!(parse("hover delay 0").is_ok());
+        assert!(parse("hover delay -5").is_err());
+        assert!(parse("hover delay soon").is_err());
     }
 
     #[test]

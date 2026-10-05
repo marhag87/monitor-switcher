@@ -306,11 +306,39 @@ pub struct Plan {
     pub problems: Vec<String>,
 }
 
+/// Hotkeys that are bound without being configured, as combination -> command.
+pub const DEFAULTS: &[(&str, &str)] = &[("ctrl+alt+shift+q", "hover switch")];
+
+/// The configured hotkeys plus whichever defaults they leave room for.
+///
+/// A default stands aside when the config binds its combination — to anything,
+/// including nothing: `"ctrl+alt+shift+q": ""` is how to switch it off — or
+/// binds its command to some other combination, which is how to move it. The
+/// comparison is on the parsed keystroke and the split command, so a different
+/// spelling of either still counts.
+pub fn with_defaults(
+    configured: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    let mut all = configured.clone();
+    for (spec, command) in DEFAULTS {
+        let binding = parse(spec).ok();
+        let words = crate::app::split_words(command);
+        let displaced = configured
+            .iter()
+            .any(|(s, c)| parse(s).ok() == binding || crate::app::split_words(c) == words);
+        if !displaced {
+            all.insert(spec.to_string(), command.to_string());
+        }
+    }
+    all
+}
+
 /// Check every configured hotkey: the combination, the command, and whether two
 /// entries ask for the same keys.
 ///
 /// The command is validated with the CLI's own parser, so a misspelled
-/// subcommand is caught here rather than on the first press.
+/// subcommand is caught here rather than on the first press. A combination with
+/// an empty command is deliberately unbound, and is skipped without complaint.
 pub fn plan(configured: &std::collections::BTreeMap<String, String>) -> Plan {
     let mut plan = Plan::default();
 
@@ -336,7 +364,6 @@ pub fn plan(configured: &std::collections::BTreeMap<String, String>) -> Plan {
 
         let words = crate::app::split_words(command);
         if words.is_empty() {
-            plan.problems.push(format!("{spec}: no command to run"));
             continue;
         }
         if let Err(e) = crate::app::check_words(&words) {
@@ -401,15 +428,58 @@ mod plan_tests {
         assert_eq!(plan.problems.len(), 1);
     }
 
+    /// An empty command is how a default is switched off, so it is neither a
+    /// hotkey nor a problem.
     #[test]
-    fn rejects_an_empty_command() {
+    fn an_empty_command_leaves_the_combination_unbound() {
         let plan = plan(&configured(&[("ctrl+shift+d", "   ")]));
         assert!(plan.ready.is_empty());
-        assert!(
-            plan.problems[0].contains("no command"),
-            "{:?}",
-            plan.problems
-        );
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+    }
+
+    fn hover_default(map: &BTreeMap<String, String>) -> Option<&str> {
+        map.get("ctrl+alt+shift+q").map(|s| s.as_str())
+    }
+
+    #[test]
+    fn the_defaults_are_themselves_valid() {
+        let defaults = with_defaults(&BTreeMap::new());
+        let plan = plan(&defaults);
+        assert!(plan.problems.is_empty(), "{:?}", plan.problems);
+        assert_eq!(plan.ready.len(), DEFAULTS.len());
+    }
+
+    #[test]
+    fn a_default_joins_an_unrelated_config() {
+        let all = with_defaults(&configured(&[("ctrl+shift+d", "switch")]));
+        assert_eq!(hover_default(&all), Some("hover switch"));
+        assert_eq!(all.len(), 2);
+    }
+
+    /// Binding the default's keys to something else, however it is spelled,
+    /// takes them over rather than colliding.
+    #[test]
+    fn a_default_yields_its_combination() {
+        let all = with_defaults(&configured(&[("Shift+Alt+Ctrl+Q", "switch")]));
+        assert_eq!(all.len(), 1);
+        assert_eq!(all["Shift+Alt+Ctrl+Q"], "switch");
+        assert!(plan(&all).problems.is_empty());
+    }
+
+    /// Binding the default's command to other keys moves it, rather than
+    /// leaving it on two.
+    #[test]
+    fn a_default_yields_its_command() {
+        let all = with_defaults(&configured(&[("ctrl+shift+h", "hover  switch")]));
+        assert_eq!(hover_default(&all), None);
+        assert_eq!(all.len(), 1);
+    }
+
+    #[test]
+    fn a_default_can_be_switched_off() {
+        let all = with_defaults(&configured(&[("ctrl+alt+shift+q", "")]));
+        let plan = plan(&all);
+        assert!(plan.ready.is_empty() && plan.problems.is_empty());
     }
 
     /// Different spellings, same keystroke: the second RegisterHotKey would be

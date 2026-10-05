@@ -53,6 +53,9 @@ const WM_TRAY: u32 = WM_APP + 1;
 /// success. Posted rather than called so the worker never waits on a message
 /// loop that might be sitting inside an open menu.
 const WM_ACTION_DONE: u32 = WM_APP + 2;
+/// Posted by an action thread with a notice to show; lparam owns a boxed
+/// [`Notice`](crate::notify::Notice), which the window takes back.
+const WM_NOTICE: u32 = WM_APP + 3;
 
 // Menu command ids. 0 is reserved: TrackPopupMenu returns it for "clicked
 // away", so no item may use it.
@@ -129,7 +132,7 @@ pub fn run(config_path: PathBuf) -> Result<()> {
 
     let config = Config::load(&config_path)
         .with_context(|| format!("the daemon needs a config at {}", config_path.display()))?;
-    let plan = hotkey::plan(&config.hotkeys);
+    let plan = hotkey::plan(&hotkey::with_defaults(&config.hotkeys));
 
     if plan.ready.is_empty() && plan.problems.is_empty() {
         anyhow::bail!(
@@ -213,6 +216,23 @@ unsafe fn window_loop(config: PathBuf, plan: hotkey::Plan) -> Result<()> {
     }
     add_icon(hwnd, state);
 
+    // Notices come from action threads, but the flyout is a window and belongs
+    // to this one, so they are posted here. HWND is not Send; the integer is.
+    let target = hwnd.0 as isize;
+    crate::notify::set_sink(move |notice| {
+        let boxed = Box::into_raw(Box::new(notice));
+        let posted = PostMessageW(
+            Some(HWND(target as *mut c_void)),
+            WM_NOTICE,
+            WPARAM(0),
+            LPARAM(boxed as isize),
+        );
+        if posted.is_err() {
+            // Never delivered, so never reclaimed by the window: take it back.
+            drop(Box::from_raw(boxed));
+        }
+    });
+
     let mut msg = MSG::default();
     while GetMessageW(&mut msg, None, 0, 0).as_bool() {
         let _ = TranslateMessage(&msg);
@@ -273,7 +293,7 @@ unsafe fn reload(hwnd: HWND, state: &mut State) {
         }
     };
 
-    let plan = hotkey::plan(&config.hotkeys);
+    let plan = hotkey::plan(&hotkey::with_defaults(&config.hotkeys));
     if plan.ready.is_empty() && !plan.problems.is_empty() {
         log!("reload found no usable hotkey, keeping the ones already registered:");
         for problem in &plan.problems {
@@ -343,6 +363,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 };
                 state.refresh_active();
                 set_status(hwnd, state, status);
+            }
+            LRESULT(0)
+        }
+        WM_NOTICE => {
+            // SAFETY: only the sink posts this, with a pointer from
+            // Box::into_raw, and each message is delivered exactly once.
+            let notice = Box::from_raw(lparam.0 as *mut crate::notify::Notice);
+            // Read fresh, like the hotkeys' commands are, so moving the flyout
+            // needs no reload. An unreadable config is no reason to stay quiet.
+            let percent = state_of(hwnd)
+                .and_then(|state| Config::load(&state.config).ok())
+                .and_then(|c| c.flyout?.from_bottom_percent)
+                .unwrap_or(crate::flyout::DEFAULT_FROM_BOTTOM_PERCENT);
+            if let Err(e) = crate::flyout::show(&notice, percent) {
+                log!("could not show the flyout: {e:#}");
             }
             LRESULT(0)
         }

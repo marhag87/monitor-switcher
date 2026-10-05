@@ -28,7 +28,8 @@ switched off.
 > **AI-generated code.** This project was written largely by an AI assistant.
 > It reconfigures display topology through the Win32 CCD API, drives monitor
 > settings over DDC/CI, and with the `cec` feature powers a television on and
-> off over the HDMI cable. The tray daemon additionally takes global hotkeys
+> off over the HDMI cable. It can also flip Windows' per-user "Activate on
+> hover" mouse setting. The tray daemon additionally takes global hotkeys
 > and, if you ask it to, adds itself to the per-user `Run` key so it starts at
 > sign-in. It has been verified on exactly one machine — a
 > single RTX 4080 SUPER driving four displays. Review it yourself before
@@ -146,6 +147,7 @@ state. That's the one to bind to a key.
 | `switch [<a> <b>] [--dry-run]` | Alternate between two profiles |
 | `vcp get\|set\|switch\|caps` | A monitor's own settings over [DDC/CI](#monitor-settings-over-ddcci) |
 | `cec status\|on\|off` | TV power over [HDMI-CEC](#tv-power-over-hdmi-cec), with the `cec` feature |
+| `hover status\|on\|off\|switch\|delay [ms]` | Windows' [Activate on hover](#activate-on-hover) mouse setting |
 
 `--dry-run` validates a change through `SDC_VALIDATE` without applying it.
 Applying a profile that is already active is a no-op: it returns in well under a
@@ -213,6 +215,13 @@ system-wide, leaving it unusable everywhere else. Each command is checked with
 the same parser the command line uses, so a typo is reported when the daemon
 starts rather than becoming a key that does nothing.
 
+One hotkey is bound without being configured: `ctrl+alt+shift+q` runs
+`hover switch`. It stands aside if the config binds that combination to
+anything else, or binds `hover switch` to a different combination — so moving
+it is just binding it where you want it. To drop it altogether, bind the
+combination to nothing: `"ctrl+alt+shift+q": ""`. An empty command always means
+"leave this unbound".
+
 ## Monitor settings over DDC/CI
 
 DDC/CI is the protocol behind the buttons on the front of a monitor — input
@@ -257,6 +266,72 @@ Not every display implements it. Monitors generally do, televisions generally
 don't — the Philips TV here answers nothing at all, and reports
 `ERROR_GRAPHICS_I2C_ERROR_TRANSMITTING_DATA` when asked. That's what
 [CEC](#tv-power-over-hdmi-cec) is for.
+
+## Activate on hover
+
+Settings > Accessibility > Mouse > *Activate on hover* makes whichever window
+is under the mouse the one that receives the keyboard, without a click. Handy
+across several monitors, a nuisance in a game, and buried four levels deep —
+so it gets a command, and by default a hotkey, `ctrl+alt+shift+q`:
+
+```
+monitor-switcher hover switch      # or on, off, status
+monitor-switcher hover delay 0     # how long the mouse must rest first
+```
+
+Underneath it is *active window tracking*, the long-standing "X-Mouse"
+setting, set with `SystemParametersInfo`. It is per-user, needs no
+administrator rights, takes effect at once, and is saved to your profile so it
+survives signing out. The command reads the setting back after changing it and
+reports what it is now, rather than what it asked for.
+
+Nothing on screen changes when hover is toggled, so the tray daemon shows a
+flyout like the one for volume: a small panel, centred on the monitor the
+mouse is on, with the setting's name and a toggle showing which way it went,
+gone again after a second or so. It follows Windows' light or dark mode and
+accent colour, so it looks like the toggle in Settings. From the command line
+the printed line does that job instead.
+
+It sits a tenth of the way up the screen rather than at the very bottom where
+Windows puts its own, because the bottom of the screen is where a game keeps
+its action bars — 10% is what clears World of Warcraft's. To move it, give the percentage up from the bottom —
+`0` is just above the taskbar, `50` the middle:
+
+```jsonc
+"flyout": { "from_bottom_percent": 10 }
+```
+
+It is read each time the flyout is shown, so a change applies from the next
+press without reloading.
+
+It is deliberately not a notification. Do Not Disturb holds those back, and
+Windows turns that on by itself during full-screen games, which is exactly
+where this gets pressed. The flyout is an ordinary window, so DND does not
+apply to it. It never takes focus and the mouse passes straight through it, so
+it cannot pull a game out of full screen or get in the way of the hover it is
+reporting on. It shows over borderless-windowed games; a game in exclusive
+full screen owns the display, and nothing appears over that — Windows' own
+volume flyout included.
+
+The switch and the delay are separate settings, so changing one leaves the
+other alone, just as in Settings. *Move window to top* is never touched.
+
+`delay` is the reason to reach past Settings at all. Its slider stops at
+100 ms, which you can feel as a lag every time focus moves, while Windows
+itself accepts anything down to 0 — immediate. Run `delay` with no value to see
+the current one. Moving the slider in Settings afterwards puts it back to
+100 ms or more.
+
+To keep the delay where you want it, put it in the config:
+
+```jsonc
+"hover": { "delay_ms": 0 }
+```
+
+Then `hover on`, and `hover switch` when it turns hover on, set that delay
+first — every time, including when hover was already on — so a slider nudged in
+Settings is undone by the next press of the hotkey. Turning hover off leaves the
+delay alone.
 
 ## TV power over HDMI-CEC
 
@@ -354,6 +429,10 @@ a bar while an action is running, a cross when a hotkey could not be registered
 or the last action failed. Actions run on their own thread, so the seconds a TV
 takes to wake never freeze the menu, and a second press while one is still
 running is ignored rather than queued.
+
+A command whose effect cannot be seen — toggling [Activate on
+hover](#activate-on-hover) — also shows a brief flyout at the bottom of the
+screen saying what it did.
 
 Only one daemon runs at a time. A second would fail to register the same
 hotkeys, so it refuses to start and says so.

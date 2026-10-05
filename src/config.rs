@@ -29,6 +29,31 @@ pub struct Config {
     /// them through a rewrite untouched.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hotkeys: BTreeMap<String, String>,
+    /// How "Activate on hover" should behave whenever this tool turns it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hover: Option<HoverConfig>,
+    /// Where the tray daemon's on-screen flyout appears.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flyout: Option<FlyoutConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlyoutConfig {
+    /// How far up the screen the flyout's bottom edge sits, as a percentage of
+    /// the screen's height from the bottom. 0 is just above the taskbar, like
+    /// Windows' volume flyout; the default, 10, clears WoW's action bars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_bottom_percent: Option<f32>,
+}
+
+/// Settings applied each time `hover on` or `hover switch` turns activate-on-hover on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HoverConfig {
+    /// The delay to put in place, in milliseconds. Re-applied every time rather
+    /// than once, because moving the slider in Settings quietly resets it to
+    /// 100 ms or more, and the next toggle should undo that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delay_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -385,6 +410,15 @@ mod tests {
         let err = format!("{:#}", Config::load(&path).unwrap_err());
         assert!(err.contains("absent.json"), "{err}");
         assert!(err.contains("save-profile"), "{err}");
+    }
+
+    #[test]
+    fn the_hover_block_is_optional_and_carries_its_delay() {
+        let none: Config = serde_json::from_str("{}").unwrap();
+        assert!(none.hover.is_none());
+
+        let set: Config = serde_json::from_str(r#"{ "hover": { "delay_ms": 0 } }"#).unwrap();
+        assert_eq!(set.hover.and_then(|h| h.delay_ms), Some(0));
     }
 
     #[test]

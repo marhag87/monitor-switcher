@@ -17,9 +17,12 @@ pub mod cli;
 pub mod config;
 pub mod ddc;
 pub mod display;
+pub mod flyout;
 pub mod hotkey;
+pub mod hover;
 pub mod icon;
 #[macro_use]
 pub mod log;
+pub mod notify;
 pub mod tray;
 pub mod winerr;

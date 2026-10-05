@@ -59,4 +59,5 @@ features = [
     "Win32_System_Registry",          # the start-at-sign-in toggle
     "Win32_System_Com",               # an apartment for ShellExecuteW
     "Win32_System_SystemInformation", # GetLocalTime, for log timestamps
+    "Win32_UI_HiDpi",                 # a sharp flyout on a scaled display
 ]

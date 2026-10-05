@@ -50,5 +50,11 @@
   "hotkeys": {
     "ctrl+alt+shift+d": "switch",
     "ctrl+alt+shift+s": "vcp switch main 60 15 18"
+  },
+  "hover": {
+    "delay_ms": 0
+  },
+  "flyout": {
+    "from_bottom_percent": 10
   }
 }
