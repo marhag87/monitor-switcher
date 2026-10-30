@@ -7,6 +7,12 @@
 //! latter: Windows already remembers how each of these layouts was arranged, so
 //! storing a second copy would only give us something to keep in sync.
 
+use std::path::Path;
+#[cfg(feature = "cec")]
+use std::process::Command;
+#[cfg(any(feature = "cec", test))]
+use std::time::Duration;
+
 use anyhow::{bail, Result};
 use windows::Win32::Devices::Display::{
     DISPLAYCONFIG_PATH_INFO, QDC_ALL_PATHS, SDC_ALLOW_CHANGES, SDC_ALLOW_PATH_ORDER_CHANGES,
@@ -19,8 +25,8 @@ use windows::Win32::Graphics::Gdi::{
 
 use super::ccd::{self, DeviceNames};
 use super::identity::{self, TargetKey};
-#[cfg(feature = "cec")]
-use crate::cec::Cec;
+#[cfg(any(feature = "cec", test))]
+use crate::child;
 use crate::config::{CecConfig, Config};
 use crate::winerr;
 
@@ -132,7 +138,16 @@ pub struct Report {
     pub cec: Vec<String>,
 }
 
-pub fn apply_profile(config: &Config, profile: &str, dry_run: bool) -> Result<Report> {
+/// Make a profile's outputs the active ones.
+///
+/// `config_path` is where `config` was read from. The CEC step runs in a child
+/// process, which has to read the same file.
+pub fn apply_profile(
+    config: &Config,
+    config_path: &Path,
+    profile: &str,
+    dry_run: bool,
+) -> Result<Report> {
     let desired = resolve(config, members_of(config, profile)?)?;
 
     // `apply_targets` has to read the topology anyway, and hands back the set
@@ -143,7 +158,7 @@ pub fn apply_profile(config: &Config, profile: &str, dry_run: bool) -> Result<Re
     let cec = if dry_run || matches!(outcome, Outcome::AlreadyActive) {
         Vec::new()
     } else {
-        run_cec(config, &desired, &was_active)
+        run_cec(config, config_path, &desired, &was_active)
     };
 
     Ok(Report { outcome, cec })
@@ -188,31 +203,99 @@ struct CecPlan<'a> {
     sleeping: Vec<CecTarget<'a>>,
 }
 
+/// How long one CEC step gets before it is presumed hung and stopped: the
+/// longest a wake waits on the TV, plus time to find, open and close the
+/// adapter — a couple of seconds when all is well.
+#[cfg(feature = "cec")]
+const CEC_TIMEOUT: Duration = crate::cec::LONGEST_WAIT.saturating_add(Duration::from_secs(15));
+
 /// Power displays on or off to match the topology we just applied.
 ///
 /// Ordering is deliberate: this runs *after* the topology change, never before.
 /// If an apply fails we must not have already switched someone's TV off for a
 /// change that never happened.
+///
+/// Each step runs as `monitor-switcher cec on|off <target>` in a child process
+/// rather than in this one, because libCEC can crash and could hang: a crash
+/// there costs one TV command rather than this process — which, in the tray
+/// daemon, is the one holding every hotkey.
 #[cfg(feature = "cec")]
-fn run_cec(config: &Config, desired: &[TargetKey], was_active: &[TargetKey]) -> Vec<String> {
+fn run_cec(
+    config: &Config,
+    config_path: &Path,
+    desired: &[TargetKey],
+    was_active: &[TargetKey],
+) -> Vec<String> {
     let mut notes = Vec::new();
     let plan = cec_transitions(config, desired, was_active);
 
-    for (name, conf) in plan.sleeping {
-        notes.push(match Cec::open(conf.hdmi_port).and_then(|c| c.sleep()) {
-            Ok(msg) => format!("{name}: {msg}"),
-            Err(e) => format!("{name}: CEC standby failed: {e:#}"),
-        });
+    // The child reads each display's CEC settings from the config itself, just
+    // as it would if the command were typed.
+    for (name, _) in plan.sleeping {
+        let outcome = cec_child(config_path, "off", name);
+        notes.push(cec_note(name, "standby", outcome, CEC_TIMEOUT));
     }
-    for (name, conf) in plan.waking {
-        notes.push(
-            match Cec::open(conf.hdmi_port).and_then(|c| c.wake(conf.activate_source)) {
-                Ok(msg) => format!("{name}: {msg}"),
-                Err(e) => format!("{name}: CEC power-on failed: {e:#}"),
-            },
-        );
+    for (name, _) in plan.waking {
+        let outcome = cec_child(config_path, "on", name);
+        notes.push(cec_note(name, "power-on", outcome, CEC_TIMEOUT));
     }
     notes
+}
+
+/// Run one `cec` command against a target, in a child process.
+#[cfg(feature = "cec")]
+fn cec_child(config_path: &Path, action: &str, target: &str) -> std::io::Result<child::Finished> {
+    // The console binary, beside whichever of the two is running. From the CLI
+    // that is itself, which is fine: the `cec` command never comes through
+    // here, so nothing recurses.
+    let exe = std::env::current_exe()?.with_file_name("monitor-switcher.exe");
+    let mut command = Command::new(&exe);
+    command
+        .arg("--config")
+        .arg(config_path)
+        .args(["cec", action, target]);
+    child::run(command, CEC_TIMEOUT).map_err(|e| {
+        std::io::Error::new(e.kind(), format!("could not start {}: {e}", exe.display()))
+    })
+}
+
+/// One CEC step's outcome, as a line for the report.
+///
+/// Every outcome is a note rather than an error: the topology has already
+/// changed by now, and a TV that would not wake is no reason to call the switch
+/// itself a failure.
+#[cfg(any(feature = "cec", test))]
+fn cec_note(
+    name: &str,
+    what: &str,
+    outcome: std::io::Result<child::Finished>,
+    timeout: Duration,
+) -> String {
+    use child::Finished;
+    match outcome {
+        // The child prints the same line this used to build in-process, led by
+        // the target's name.
+        Ok(Finished::Exited {
+            code: 0, stdout, ..
+        }) => match stdout.trim() {
+            "" => format!("{name}: CEC {what} done"),
+            line => line.to_string(),
+        },
+        Ok(Finished::Exited { code, stderr, .. }) => match child::crash(code) {
+            Some(crash) => {
+                format!("{name}: CEC {what} crashed with {crash}; the displays switched regardless")
+            }
+            None => match child::one_line(&stderr) {
+                why if why.is_empty() => format!("{name}: CEC {what} failed with exit code {code}"),
+                why => format!("{name}: CEC {what} failed: {why}"),
+            },
+        },
+        Ok(Finished::TimedOut) => format!(
+            "{name}: CEC {what} was still running after {}s, so it was stopped",
+            timeout.as_secs()
+        ),
+        Err(e) => format!("{name}: CEC {what} failed: {e}"),
+    }
 }
 
 /// Without the `cec` feature there is no power control — but a config written
@@ -223,7 +306,12 @@ fn run_cec(config: &Config, desired: &[TargetKey], was_active: &[TargetKey]) -> 
 /// Naming every display that merely has a `cec` block would print the same
 /// warning on switches that were never going to touch the TV.
 #[cfg(not(feature = "cec"))]
-fn run_cec(config: &Config, desired: &[TargetKey], was_active: &[TargetKey]) -> Vec<String> {
+fn run_cec(
+    config: &Config,
+    _config_path: &Path,
+    desired: &[TargetKey],
+    was_active: &[TargetKey],
+) -> Vec<String> {
     let plan = cec_transitions(config, desired, was_active);
     let affected: Vec<&str> = plan
         .waking
@@ -416,7 +504,13 @@ fn build_paths(
 }
 
 /// Alternate between two profiles: whichever one isn't currently active wins.
-pub fn switch(config: &Config, a: &str, b: &str, dry_run: bool) -> Result<(String, Report)> {
+pub fn switch(
+    config: &Config,
+    config_path: &Path,
+    a: &str,
+    b: &str,
+    dry_run: bool,
+) -> Result<(String, Report)> {
     // Both names are checked before anything is read or applied, so a typo in
     // either one fails without touching the displays.
     let a_members = members_of(config, a)?;
@@ -434,7 +528,7 @@ pub fn switch(config: &Config, a: &str, b: &str, dry_run: bool) -> Result<(Strin
     // us to `a`, so a hotkey recovers from an odd state rather than refusing.
     let target = if on_a { b } else { a };
 
-    let outcome = apply_profile(config, target, dry_run)?;
+    let outcome = apply_profile(config, config_path, target, dry_run)?;
     Ok((target.to_string(), outcome))
 }
 
@@ -767,6 +861,75 @@ mod tests {
         let config = cec_config_with(None);
         let plan = cec_transitions(&config, &[key(1)], &[key(2)]);
         assert!(names(&plan.waking).is_empty() && names(&plan.sleeping).is_empty());
+    }
+
+    fn exited(code: u32, stdout: &str, stderr: &str) -> std::io::Result<child::Finished> {
+        Ok(child::Finished::Exited {
+            code,
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        })
+    }
+
+    const TIMEOUT: Duration = Duration::from_secs(42);
+
+    #[test]
+    fn a_cec_step_that_worked_reports_the_childs_own_line() {
+        let note = cec_note(
+            "tv",
+            "power-on",
+            exited(0, "tv: TV woken, input claimed\r\n", ""),
+            TIMEOUT,
+        );
+        assert_eq!(note, "tv: TV woken, input claimed");
+    }
+
+    #[test]
+    fn a_cec_step_that_failed_reports_why_on_one_line() {
+        let stderr = "error: no CEC adapter found (is the Pulse-Eight adapter plugged in?)\r\n  \
+                      caused by: not found\r\n";
+        let note = cec_note("tv", "standby", exited(1, "", stderr), TIMEOUT);
+        assert_eq!(
+            note,
+            "tv: CEC standby failed: no CEC adapter found \
+             (is the Pulse-Eight adapter plugged in?): not found"
+        );
+
+        let silent = cec_note("tv", "standby", exited(1, "", ""), TIMEOUT);
+        assert_eq!(silent, "tv: CEC standby failed with exit code 1");
+    }
+
+    /// What used to take the tray daemon down with it.
+    #[test]
+    fn a_cec_step_that_crashed_says_so_and_that_the_switch_happened() {
+        let note = cec_note("tv", "power-on", exited(0xC000_0005, "", ""), TIMEOUT);
+        assert_eq!(
+            note,
+            "tv: CEC power-on crashed with an access violation (0xC0000005); \
+             the displays switched regardless"
+        );
+    }
+
+    #[test]
+    fn a_cec_step_that_hung_says_how_long_it_was_given() {
+        let note = cec_note("tv", "power-on", Ok(child::Finished::TimedOut), TIMEOUT);
+        assert_eq!(
+            note,
+            "tv: CEC power-on was still running after 42s, so it was stopped"
+        );
+    }
+
+    #[test]
+    fn a_cec_step_that_could_not_start_says_why() {
+        let missing = std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "could not start C:\\x\\monitor-switcher.exe: not found",
+        );
+        let note = cec_note("tv", "power-on", Err(missing), TIMEOUT);
+        assert_eq!(
+            note,
+            "tv: CEC power-on failed: could not start C:\\x\\monitor-switcher.exe: not found"
+        );
     }
 
     #[test]

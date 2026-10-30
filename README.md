@@ -68,7 +68,9 @@ cargo build --release
 ```
 
 That produces two self-contained executables in `target\release`, about 1.2 MB
-each. Nothing needs installing; put them wherever you like.
+each. Nothing needs installing; put them wherever you like, as long as they
+stay together — with the `cec` feature, both run their TV power commands
+through the `monitor-switcher.exe` beside them.
 
 | | |
 |---|---|
@@ -383,6 +385,21 @@ topology — the quickest way to tell whether the adapter is at fault when a
 Power control is always best-effort: if the adapter is missing or the TV
 ignores a command, `switch` says so and still changes the display topology. A
 missing adapter must never stop your monitors switching.
+
+Nor must libCEC itself. Each power command runs in a child process — the
+`monitor-switcher cec on tv` you could type yourself — rather than inside
+whatever is doing the switching, because libCEC can crash: switching back to
+the TV a few seconds after sending it to standby has been seen to kill the
+process in libCEC's own thread, as it closed its connection. Inside the tray
+daemon that took every hotkey with it. In a child it is one line in the log:
+
+```
+tv: CEC power-on crashed with an access violation (0xC0000005); the displays switched regardless
+```
+
+A command still running after 42 seconds — the longest a wake waits on the
+TV, plus time to open the adapter — is presumed hung, stopped, and reported the
+same way.
 
 > [!IMPORTANT]
 > **libCEC is GPL-2.0-or-later** (or commercial, from Pulse-Eight), so a binary

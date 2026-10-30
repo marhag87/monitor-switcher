@@ -13,6 +13,11 @@
 pub mod app;
 #[cfg(feature = "cec")]
 pub mod cec;
+// Only CEC runs anything in a child process, but the tests cover it either way:
+// CI builds without the feature, and this is the part that keeps a libCEC crash
+// from taking the tray daemon down.
+#[cfg(any(feature = "cec", test))]
+pub mod child;
 pub mod cli;
 pub mod config;
 pub mod ddc;

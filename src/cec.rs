@@ -30,6 +30,10 @@ const SETTLE_TIMEOUT: Duration = Duration::from_secs(12);
 /// How long to wait for the TV to report itself on after being told to wake.
 const POWER_ON_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// The longest a wake can legitimately spend waiting on the TV, for whoever has
+/// to decide when one has hung instead.
+pub const LONGEST_WAIT: Duration = SETTLE_TIMEOUT.saturating_add(POWER_ON_TIMEOUT);
+
 const POLL_INTERVAL: Duration = Duration::from_millis(400);
 
 pub struct Cec {

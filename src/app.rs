@@ -144,7 +144,7 @@ pub fn run(cli: Cli) -> Result<()> {
         }
         Command::ApplyProfile { name, dry } => {
             let config = Config::load(&config_path)?;
-            let report_ = display::apply::apply_profile(&config, &name, dry.dry_run)?;
+            let report_ = display::apply::apply_profile(&config, &config_path, &name, dry.dry_run)?;
             report(&name, report_);
             Ok(())
         }
@@ -168,7 +168,8 @@ pub fn run(cli: Cli) -> Result<()> {
                 [a, b] => (a.clone(), b.clone()),
                 _ => anyhow::bail!("switch takes either no profiles or exactly 2"),
             };
-            let (applied, report_) = display::apply::switch(&config, &a, &b, dry.dry_run)?;
+            let (applied, report_) =
+                display::apply::switch(&config, &config_path, &a, &b, dry.dry_run)?;
             report(&applied, report_);
             Ok(())
         }
